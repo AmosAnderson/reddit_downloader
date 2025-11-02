@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reddit Downloader</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Reddit Downloader</h1>
+            <p class="subtitle">Download media from Reddit posts and user profiles</p>
+        </header>
+
+        <main>
+            <section class="upload-section">
+                <div id="dropZone" class="drop-zone">
+                    <div class="drop-zone-content">
+                        <svg class="drop-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                        </svg>
+                        <p class="drop-text">Drag and drop Reddit URLs here</p>
+                        <p class="drop-subtext">or paste URLs below</p>
+                    </div>
+                </div>
+
+                <div class="input-section">
+                    <input
+                        type="text"
+                        id="urlInput"
+                        placeholder="Paste Reddit URL (post or user profile)..."
+                        class="url-input"
+                    >
+                    <div class="controls">
+                        <input
+                            type="number"
+                            id="limitInput"
+                            placeholder="Limit (optional)"
+                            min="1"
+                            class="limit-input"
+                        >
+                        <button id="downloadBtn" class="btn btn-primary">Download</button>
+                    </div>
+                </div>
+            </section>
+
+            <section class="jobs-section">
+                <h2>Downloads</h2>
+                <div id="jobsList" class="jobs-list">
+                    <p class="empty-message">No downloads yet</p>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>Download location: <span id="outputDir">Loading...</span></p>
+        </footer>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

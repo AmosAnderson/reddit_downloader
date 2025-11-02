@@ -1,0 +1,35 @@
+# Example docker-compose override file
+# Copy this to docker-compose.override.yml and customize as needed
+# docker-compose.override.yml is automatically loaded by docker-compose
+
+version: '3.8'
+
+services:
+  reddit-downloader:
+    # Example: Use a different port
+    ports:
+      - "8080:5000"
+
+    # Example: Use a specific download location
+    volumes:
+      - /mnt/media/reddit:/downloads
+
+    # Example: Use a named volume instead of bind mount
+    # volumes:
+    #   - reddit-downloads:/downloads
+
+    # Example: Add resource limits
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2'
+    #       memory: 2G
+
+    # Example: Custom environment variables
+    # environment:
+    #   - TZ=America/New_York
+
+# If using named volumes, define them here
+# volumes:
+#   reddit-downloads:
+#     driver: local
