@@ -8,6 +8,8 @@ Download media from Reddit posts and user profiles with support for images, vide
 - 👤 Download all media from user profiles
 - 🖼️ Support for images, videos (with audio), and galleries
 - 🌐 **Web interface with drag-and-drop support**
+- 💾 **Download via browser with ZIP or TAR.ZST compression**
+- 🗑️ **Automatic file cleanup after download**
 - 📚 Library API for programmatic use
 - ⌨️ Command-line interface
 - 🐳 **Docker support with configurable volumes**
@@ -147,6 +149,19 @@ uv run python -m reddit_downloader web
 - Real-time progress tracking
 - Download multiple posts/users concurrently
 - Automatic video/audio merging
+- **Download files directly from web UI** - Files are served through your browser and automatically deleted from the server after download
+- **Bulk download options** - Download all media as ZIP or TAR.ZST archive
+- **Individual file downloads** - Download specific files one at a time
+
+#### Downloading Files from Web UI
+
+Once a download job completes, you can download the media files directly through your browser:
+
+1. **Individual Files**: Click the "Download" button next to any file to download it to your browser's download folder
+2. **Bulk Download (ZIP)**: Click "Download All (ZIP)" to get all files in a standard ZIP archive
+3. **Bulk Download (TAR.ZST)**: Click "Download All (TAR.ZST)" to get all files in a Zstandard-compressed tarball (smaller file size)
+
+**Important**: Files are automatically deleted from the server after you download them. This helps manage disk space and ensures privacy.
 
 ### Command Line Interface
 

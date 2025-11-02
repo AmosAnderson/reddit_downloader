@@ -1,10 +1,14 @@
 """Flask web application for reddit_downloader."""
 
+import io
+import tarfile
 import webbrowser
+import zipfile
 from pathlib import Path
 from threading import Timer
 
-from flask import Flask, render_template, request
+import zstandard as zstd
+from flask import Flask, render_template, request, send_file
 from werkzeug.exceptions import BadRequest
 
 from reddit_downloader.client import RedditClient
@@ -160,6 +164,173 @@ def create_app() -> Flask:
             "success": True,
             "output_dir": str(output_directory),
         }, 200
+
+    @app.route("/api/files/<job_id>", methods=["GET"])
+    def api_files(job_id: str) -> tuple[dict[str, object], int]:
+        """Get list of files for a completed job.
+
+        Args:
+            job_id: Job ID
+
+        Returns:
+            JSON response with list of files
+        """
+        if job_manager is None:
+            return {"success": False, "error": "Server not properly initialized"}, 500
+
+        job = job_manager.get_job(job_id)
+
+        if not job:
+            return {"success": False, "error": "Job not found"}, 404
+
+        if not job.results:
+            return {"success": True, "files": []}, 200
+
+        files = []
+        for index, result in enumerate(job.results):
+            if result.success and result.file_path and result.file_path.exists():
+                files.append(
+                    {
+                        "index": index,
+                        "filename": result.file_path.name,
+                        "size": result.file_path.stat().st_size,
+                    }
+                )
+
+        return {"success": True, "files": files}, 200
+
+    @app.route("/api/download-file/<job_id>/<int:file_index>", methods=["GET"])
+    def api_download_file(job_id: str, file_index: int) -> tuple[dict[str, bool | str], int]:
+        """Download a single file and delete it after sending.
+
+        Args:
+            job_id: Job ID
+            file_index: Index of the file in the job's results
+
+        Returns:
+            File download response
+        """
+        if job_manager is None:
+            return {"success": False, "error": "Server not properly initialized"}, 500
+
+        job = job_manager.get_job(job_id)
+
+        if not job:
+            return {"success": False, "error": "Job not found"}, 404
+
+        if not job.results or file_index >= len(job.results) or file_index < 0:
+            return {"success": False, "error": "File not found"}, 404
+
+        result = job.results[file_index]
+
+        if not result.success or not result.file_path or not result.file_path.exists():
+            return {"success": False, "error": "File not available"}, 404
+
+        file_path = result.file_path
+
+        # Send file and delete after
+        response = send_file(
+            file_path,
+            as_attachment=True,
+            download_name=file_path.name,
+        )
+
+        # Delete file after sending
+        @response.call_on_close
+        def cleanup() -> None:
+            try:
+                file_path.unlink(missing_ok=True)
+            except Exception:
+                pass  # Ignore errors during cleanup
+
+        return response  # type: ignore[return-value]
+
+    @app.route("/api/download-archive/<job_id>", methods=["GET"])
+    def api_download_archive(job_id: str) -> tuple[dict[str, bool | str], int]:
+        """Download all files as an archive and delete them after sending.
+
+        Args:
+            job_id: Job ID
+
+        Query params:
+            format: 'zip' or 'tar.zst' (default: zip)
+
+        Returns:
+            Archive download response
+        """
+        if job_manager is None:
+            return {"success": False, "error": "Server not properly initialized"}, 500
+
+        job = job_manager.get_job(job_id)
+
+        if not job:
+            return {"success": False, "error": "Job not found"}, 404
+
+        if not job.results:
+            return {"success": False, "error": "No files to download"}, 404
+
+        # Get all successful downloads
+        files = [
+            result.file_path
+            for result in job.results
+            if result.success and result.file_path and result.file_path.exists()
+        ]
+
+        if not files:
+            return {"success": False, "error": "No files available"}, 404
+
+        # Get archive format from query params
+        archive_format = request.args.get("format", "zip").lower()
+
+        if archive_format not in ["zip", "tar.zst"]:
+            return {"success": False, "error": "Invalid format. Use 'zip' or 'tar.zst'"}, 400
+
+        # Create archive in memory
+        if archive_format == "zip":
+            archive_bytes = io.BytesIO()
+            with zipfile.ZipFile(archive_bytes, "w", zipfile.ZIP_DEFLATED) as zf:
+                for file_path in files:
+                    zf.write(file_path, arcname=file_path.name)
+            archive_bytes.seek(0)
+            mimetype = "application/zip"
+            extension = "zip"
+        else:  # tar.zst
+            # Create tar in memory first
+            tar_bytes = io.BytesIO()
+            with tarfile.open(fileobj=tar_bytes, mode="w") as tar:
+                for file_path in files:
+                    tar.add(file_path, arcname=file_path.name)
+            tar_bytes.seek(0)
+
+            # Compress with zstandard
+            cctx = zstd.ZstdCompressor(level=3)
+            archive_bytes = io.BytesIO(cctx.compress(tar_bytes.read()))
+            archive_bytes.seek(0)
+            mimetype = "application/zstd"
+            extension = "tar.zst"
+
+        # Clean job ID for filename
+        safe_job_id = "".join(c if c.isalnum() else "_" for c in job_id)
+        download_name = f"reddit_download_{safe_job_id}.{extension}"
+
+        # Send archive
+        response = send_file(
+            archive_bytes,
+            mimetype=mimetype,
+            as_attachment=True,
+            download_name=download_name,
+        )
+
+        # Delete all files after sending
+        @response.call_on_close
+        def cleanup() -> None:
+            for file_path in files:
+                try:
+                    file_path.unlink(missing_ok=True)
+                except Exception:
+                    pass  # Ignore errors during cleanup
+
+        return response  # type: ignore[return-value]
 
     return app
 

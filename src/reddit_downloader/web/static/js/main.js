@@ -222,6 +222,14 @@ function createJobElement(job) {
         ? `<div class="job-error">Error: ${escapeHtml(job.error)}</div>`
         : '';
 
+    // Show download buttons for completed jobs
+    const downloadSection = job.status === 'completed' && job.completed_items > 0
+        ? `<div class="job-downloads" id="downloads-${job.job_id}">
+            <div class="download-loading">Loading files...</div>
+           </div>
+           <script>loadJobFiles('${job.job_id}')</script>`
+        : '';
+
     return `
         <div class="job-item status-${job.status}">
             <div class="job-header">
@@ -236,6 +244,7 @@ function createJobElement(job) {
             </div>
             ${currentItem}
             ${error}
+            ${downloadSection}
         </div>
     `;
 }
@@ -265,6 +274,112 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// Utility: Format file size
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+}
+
+// Load files for a completed job
+async function loadJobFiles(jobId) {
+    try {
+        const response = await fetch(`/api/files/${jobId}`);
+        const data = await response.json();
+
+        const container = document.getElementById(`downloads-${jobId}`);
+        if (!container) return;
+
+        if (data.success && data.files.length > 0) {
+            renderDownloadButtons(jobId, data.files, container);
+        } else {
+            container.innerHTML = '<div class="no-files">No files available</div>';
+        }
+    } catch (error) {
+        console.error('Error loading files:', error);
+        const container = document.getElementById(`downloads-${jobId}`);
+        if (container) {
+            container.innerHTML = '<div class="download-error">Failed to load files</div>';
+        }
+    }
+}
+
+// Render download buttons
+function renderDownloadButtons(jobId, files, container) {
+    const filesHtml = files.map(file => `
+        <div class="file-item">
+            <span class="file-name">${escapeHtml(file.filename)}</span>
+            <span class="file-size">${formatFileSize(file.size)}</span>
+            <button class="btn btn-small" onclick="downloadFile('${jobId}', ${file.index})">
+                Download
+            </button>
+        </div>
+    `).join('');
+
+    container.innerHTML = `
+        <div class="download-header">
+            <h3>Downloaded Files (${files.length})</h3>
+            <div class="bulk-actions">
+                <button class="btn btn-primary" onclick="downloadArchive('${jobId}', 'zip')">
+                    Download All (ZIP)
+                </button>
+                <button class="btn btn-secondary" onclick="downloadArchive('${jobId}', 'tar.zst')">
+                    Download All (TAR.ZST)
+                </button>
+            </div>
+        </div>
+        <div class="files-list">
+            ${filesHtml}
+        </div>
+    `;
+}
+
+// Download individual file
+async function downloadFile(jobId, fileIndex) {
+    try {
+        const url = `/api/download-file/${jobId}/${fileIndex}`;
+
+        // Create a hidden link and trigger download
+        const link = document.createElement('a');
+        link.href = url;
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        showToast('File downloaded! It will be removed from the server.', 'success');
+
+        // Reload files after a short delay
+        setTimeout(() => loadJobFiles(jobId), 1000);
+    } catch (error) {
+        showToast('Error downloading file: ' + error.message, 'error');
+    }
+}
+
+// Download archive
+async function downloadArchive(jobId, format) {
+    try {
+        const url = `/api/download-archive/${jobId}?format=${format}`;
+
+        // Create a hidden link and trigger download
+        const link = document.createElement('a');
+        link.href = url;
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        showToast(`Archive downloaded! All files will be removed from the server.`, 'success');
+
+        // Reload files after a short delay
+        setTimeout(() => loadJobFiles(jobId), 1000);
+    } catch (error) {
+        showToast('Error downloading archive: ' + error.message, 'error');
+    }
 }
 
 // Cleanup on page unload
