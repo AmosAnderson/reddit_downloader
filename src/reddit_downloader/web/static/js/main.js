@@ -201,6 +201,10 @@ function renderJobs(jobs) {
         if (job.status === 'running' || job.status === 'queued') {
             state.activeJobs.add(job.job_id);
         }
+        // Load files for completed jobs
+        if (job.status === 'completed' && job.completed_items > 0) {
+            loadJobFiles(job.job_id);
+        }
     });
 }
 
@@ -226,8 +230,7 @@ function createJobElement(job) {
     const downloadSection = job.status === 'completed' && job.completed_items > 0
         ? `<div class="job-downloads" id="downloads-${job.job_id}">
             <div class="download-loading">Loading files...</div>
-           </div>
-           <script>loadJobFiles('${job.job_id}')</script>`
+           </div>`
         : '';
 
     return `
@@ -288,22 +291,34 @@ function formatFileSize(bytes) {
 // Load files for a completed job
 async function loadJobFiles(jobId) {
     try {
+        console.log('Loading files for job:', jobId);
         const response = await fetch(`/api/files/${jobId}`);
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
         const data = await response.json();
+        console.log('Files data:', data);
 
         const container = document.getElementById(`downloads-${jobId}`);
-        if (!container) return;
+        if (!container) {
+            console.error('Container not found for job:', jobId);
+            return;
+        }
 
-        if (data.success && data.files.length > 0) {
+        if (data.success && data.files && data.files.length > 0) {
+            console.log('Rendering download buttons for', data.files.length, 'files');
             renderDownloadButtons(jobId, data.files, container);
         } else {
+            console.log('No files available for job:', jobId);
             container.innerHTML = '<div class="no-files">No files available</div>';
         }
     } catch (error) {
-        console.error('Error loading files:', error);
+        console.error('Error loading files for job', jobId, ':', error);
         const container = document.getElementById(`downloads-${jobId}`);
         if (container) {
-            container.innerHTML = '<div class="download-error">Failed to load files</div>';
+            container.innerHTML = `<div class="download-error">Failed to load files: ${error.message}</div>`;
         }
     }
 }

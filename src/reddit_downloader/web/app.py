@@ -6,9 +6,10 @@ import webbrowser
 import zipfile
 from pathlib import Path
 from threading import Timer
+from typing import Any
 
 import zstandard as zstd
-from flask import Flask, render_template, request, send_file
+from flask import Flask, Response, render_template, request, send_file
 from werkzeug.exceptions import BadRequest
 
 from reddit_downloader.client import RedditClient
@@ -200,7 +201,7 @@ def create_app() -> Flask:
         return {"success": True, "files": files}, 200
 
     @app.route("/api/download-file/<job_id>/<int:file_index>", methods=["GET"])
-    def api_download_file(job_id: str, file_index: int) -> tuple[dict[str, bool | str], int]:
+    def api_download_file(job_id: str, file_index: int) -> Response | tuple[dict[str, Any], int]:
         """Download a single file and delete it after sending.
 
         Args:
@@ -230,7 +231,7 @@ def create_app() -> Flask:
 
         # Send file and delete after
         response = send_file(
-            file_path,
+            str(file_path),
             as_attachment=True,
             download_name=file_path.name,
         )
@@ -243,10 +244,10 @@ def create_app() -> Flask:
             except Exception:
                 pass  # Ignore errors during cleanup
 
-        return response  # type: ignore[return-value]
+        return response
 
     @app.route("/api/download-archive/<job_id>", methods=["GET"])
-    def api_download_archive(job_id: str) -> tuple[dict[str, bool | str], int]:
+    def api_download_archive(job_id: str) -> Response | tuple[dict[str, Any], int]:
         """Download all files as an archive and delete them after sending.
 
         Args:
@@ -290,7 +291,7 @@ def create_app() -> Flask:
             archive_bytes = io.BytesIO()
             with zipfile.ZipFile(archive_bytes, "w", zipfile.ZIP_DEFLATED) as zf:
                 for file_path in files:
-                    zf.write(file_path, arcname=file_path.name)
+                    zf.write(str(file_path), arcname=file_path.name)
             archive_bytes.seek(0)
             mimetype = "application/zip"
             extension = "zip"
@@ -299,7 +300,7 @@ def create_app() -> Flask:
             tar_bytes = io.BytesIO()
             with tarfile.open(fileobj=tar_bytes, mode="w") as tar:
                 for file_path in files:
-                    tar.add(file_path, arcname=file_path.name)
+                    tar.add(str(file_path), arcname=file_path.name)
             tar_bytes.seek(0)
 
             # Compress with zstandard
@@ -330,7 +331,7 @@ def create_app() -> Flask:
                 except Exception:
                     pass  # Ignore errors during cleanup
 
-        return response  # type: ignore[return-value]
+        return response
 
     return app
 
