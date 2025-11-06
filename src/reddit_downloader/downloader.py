@@ -39,6 +39,73 @@ class MediaDownloader:
             filename = filename[:200]
         return filename
 
+    def _extract_url_extension(self, url: str) -> str:
+        """Extract file extension from URL.
+
+        Args:
+            url: URL to extract extension from
+
+        Returns:
+            File extension without the dot
+        """
+        return url.split(".")[-1].split("?")[0]
+
+    def _construct_audio_url(self, base_url: str, audio_variant: str) -> str:
+        """Construct audio URL by replacing video DASH variant with audio variant.
+
+        Args:
+            base_url: Base video URL with DASH variant
+            audio_variant: Audio variant to use (e.g., "DASH_audio.mp4")
+
+        Returns:
+            Constructed audio URL
+        """
+        return re.sub(r"DASH_[^.]+\.mp4", audio_variant, base_url)
+
+    def _create_media_info(
+        self, post: Submission, media_type: MediaType, filename: str
+    ) -> MediaInfo:
+        """Create MediaInfo object from post data.
+
+        Args:
+            post: PRAW Submission object
+            media_type: Type of media
+            filename: Filename for the media
+
+        Returns:
+            MediaInfo object
+        """
+        return MediaInfo(
+            url=post.url,
+            media_type=media_type,
+            filename=filename,
+            post_id=post.id,
+            post_title=post.title,
+        )
+
+    def _create_download_result(
+        self,
+        filepath: Path | None,
+        media_info: MediaInfo | None,
+        error_msg: str = "Download failed",
+    ) -> DownloadResult:
+        """Create DownloadResult object.
+
+        Args:
+            filepath: Path to downloaded file, or None if failed
+            media_info: MediaInfo object, or None
+            error_msg: Error message to use if download failed
+
+        Returns:
+            DownloadResult object
+        """
+        return DownloadResult(
+            success=filepath is not None,
+            file_path=filepath,
+            error=None if filepath else error_msg,
+            media_info=media_info,
+        )
+
     def _get_media_type(self, post: Submission) -> MediaType:
         """Determine the type of media in a Reddit post.
 
@@ -97,7 +164,7 @@ class MediaDownloader:
                     if chunk:
                         f.write(chunk)
             return True
-        except Exception:
+        except (requests.RequestException, OSError, IOError):
             return False
 
     def download_image(self, url: str, filename: str) -> Path | None:
@@ -164,18 +231,20 @@ class MediaDownloader:
 
         # Method 3: Construct from fallback URL by replacing DASH_xxx with DASH_audio
         # Try different audio quality levels and capitalizations
-        possible_audio_urls.append(re.sub(r"DASH_[^.]+\.mp4", "DASH_audio_128.mp4", video_url))
-        possible_audio_urls.append(re.sub(r"DASH_[^.]+\.mp4", "DASH_AUDIO_128.mp4", video_url))
-        possible_audio_urls.append(re.sub(r"DASH_[^.]+\.mp4", "DASH_audio.mp4", video_url))
-        possible_audio_urls.append(re.sub(r"DASH_[^.]+\.mp4", "DASH_AUDIO.mp4", video_url))
+        audio_variants = [
+            "DASH_audio_128.mp4",
+            "DASH_AUDIO_128.mp4",
+            "DASH_audio.mp4",
+            "DASH_AUDIO.mp4",
+        ]
+        for variant in audio_variants:
+            possible_audio_urls.append(self._construct_audio_url(video_url, variant))
 
         # Try the base URL structure without query params
         base_video_url = video_url.split("?")[0]
         if base_video_url != video_url:
-            possible_audio_urls.append(
-                re.sub(r"DASH_[^.]+\.mp4", "DASH_audio_128.mp4", base_video_url)
-            )
-            possible_audio_urls.append(re.sub(r"DASH_[^.]+\.mp4", "DASH_audio.mp4", base_video_url))
+            for variant in ["DASH_audio_128.mp4", "DASH_audio.mp4"]:
+                possible_audio_urls.append(self._construct_audio_url(base_video_url, variant))
 
         # Remove duplicates while preserving order
         seen = set()
@@ -239,7 +308,7 @@ class MediaDownloader:
                 video_temp.rename(filepath)
                 return filepath
 
-        except Exception as e:
+        except (requests.RequestException, OSError, IOError) as e:
             print(f"Error downloading video {filename}: {e}")
             return None
         finally:
@@ -249,7 +318,7 @@ class MediaDownloader:
                     video_temp.unlink()
                 if audio_temp.exists():
                     audio_temp.unlink()
-            except Exception:
+            except OSError:
                 pass
 
     def _merge_video_audio(self, video_path: Path, audio_path: Path, output_path: Path) -> bool:
@@ -362,46 +431,20 @@ class MediaDownloader:
         elif media_type == MediaType.IMAGE:
             # Download single image
             url = post.url
-            # Get extension from URL
-            ext = url.split(".")[-1].split("?")[0]
+            ext = self._extract_url_extension(url)
             filename = f"{base_filename}.{ext}"
 
-            media_info = MediaInfo(
-                url=url,
-                media_type=MediaType.IMAGE,
-                filename=filename,
-                post_id=post.id,
-                post_title=post.title,
-            )
-
+            media_info = self._create_media_info(post, MediaType.IMAGE, filename)
             filepath = self.download_image(url, filename)
-            results.append(
-                DownloadResult(
-                    success=filepath is not None,
-                    file_path=filepath,
-                    error=None if filepath else "Download failed",
-                    media_info=media_info,
-                )
-            )
+            results.append(self._create_download_result(filepath, media_info))
 
         elif media_type == MediaType.VIDEO:
             # Download video
-            media_info = MediaInfo(
-                url=post.url,
-                media_type=MediaType.VIDEO,
-                filename=f"{base_filename}.mp4",
-                post_id=post.id,
-                post_title=post.title,
-            )
-
+            filename = f"{base_filename}.mp4"
+            media_info = self._create_media_info(post, MediaType.VIDEO, filename)
             filepath = self.download_video(post, base_filename)
             results.append(
-                DownloadResult(
-                    success=filepath is not None,
-                    file_path=filepath,
-                    error=None if filepath else "Video download failed",
-                    media_info=media_info,
-                )
+                self._create_download_result(filepath, media_info, "Video download failed")
             )
 
         elif media_type == MediaType.GALLERY:
@@ -409,66 +452,29 @@ class MediaDownloader:
             downloaded_files = self.download_gallery(post, base_filename)
 
             for _index, filepath in enumerate(downloaded_files, start=1):
-                media_info = MediaInfo(
-                    url=post.url,
-                    media_type=MediaType.GALLERY,
-                    filename=filepath.name,
-                    post_id=post.id,
-                    post_title=post.title,
-                )
-                results.append(
-                    DownloadResult(
-                        success=True,
-                        file_path=filepath,
-                        error=None,
-                        media_info=media_info,
-                    )
-                )
+                media_info = self._create_media_info(post, MediaType.GALLERY, filepath.name)
+                results.append(self._create_download_result(filepath, media_info))
 
             # If no files were downloaded from gallery
             if not downloaded_files:
                 results.append(
-                    DownloadResult(
-                        success=False,
-                        file_path=None,
-                        error="No valid images found in gallery",
-                        media_info=None,
-                    )
+                    self._create_download_result(None, None, "No valid images found in gallery")
                 )
 
         elif media_type == MediaType.EXTERNAL:
             # For external links, we'll try to download if it looks like a direct image link
             url = post.url
             if any(url.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".gif")):
-                ext = url.split(".")[-1].split("?")[0]
+                ext = self._extract_url_extension(url)
                 filename = f"{base_filename}.{ext}"
 
-                media_info = MediaInfo(
-                    url=url,
-                    media_type=MediaType.EXTERNAL,
-                    filename=filename,
-                    post_id=post.id,
-                    post_title=post.title,
-                )
-
+                media_info = self._create_media_info(post, MediaType.EXTERNAL, filename)
                 filepath = self.download_image(url, filename)
-                results.append(
-                    DownloadResult(
-                        success=filepath is not None,
-                        file_path=filepath,
-                        error=None if filepath else "Download failed",
-                        media_info=media_info,
-                    )
-                )
+                results.append(self._create_download_result(filepath, media_info))
             else:
                 # External link that we can't handle
                 results.append(
-                    DownloadResult(
-                        success=False,
-                        file_path=None,
-                        error=f"Unsupported external link: {url}",
-                        media_info=None,
-                    )
+                    self._create_download_result(None, None, f"Unsupported external link: {url}")
                 )
 
         return results

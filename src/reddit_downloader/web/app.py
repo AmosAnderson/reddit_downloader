@@ -240,9 +240,11 @@ def create_app() -> Flask:
         @response.call_on_close
         def cleanup() -> None:
             try:
-                file_path.unlink(missing_ok=True)
-            except Exception:
-                pass  # Ignore errors during cleanup
+                if file_path.exists():
+                    file_path.unlink()
+                    print(f"Deleted downloaded file: {file_path}")
+            except OSError as e:
+                print(f"Warning: Failed to delete file {file_path}: {e}")
 
         return response
 
@@ -325,11 +327,15 @@ def create_app() -> Flask:
         # Delete all files after sending
         @response.call_on_close
         def cleanup() -> None:
+            deleted_count = 0
             for file_path in files:
                 try:
-                    file_path.unlink(missing_ok=True)
-                except Exception:
-                    pass  # Ignore errors during cleanup
+                    if file_path.exists():
+                        file_path.unlink()
+                        deleted_count += 1
+                except OSError as e:
+                    print(f"Warning: Failed to delete file {file_path}: {e}")
+            print(f"Deleted {deleted_count}/{len(files)} files from archive download")
 
         return response
 

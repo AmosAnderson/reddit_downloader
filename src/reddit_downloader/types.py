@@ -1,6 +1,7 @@
 """Type definitions for reddit_downloader."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
@@ -67,3 +68,4 @@ class DownloadJob:
     current_item: str | None = None
     error: str | None = None
     results: list[DownloadResult] | None = None
+    created_at: datetime = field(default_factory=datetime.now)

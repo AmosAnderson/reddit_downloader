@@ -190,9 +190,7 @@ function renderJobs(jobs) {
         return;
     }
 
-    // Sort by most recent first (assuming job_id is chronological)
-    jobs.sort((a, b) => b.job_id.localeCompare(a.job_id));
-
+    // Jobs are already sorted by server (newest first)
     jobsList.innerHTML = jobs.map(job => createJobElement(job)).join('');
 
     // Update active jobs

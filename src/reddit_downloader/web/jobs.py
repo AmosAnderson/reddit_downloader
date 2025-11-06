@@ -73,13 +73,17 @@ class JobManager:
                         setattr(job, key, value)
 
     def list_jobs(self) -> list[DownloadJob]:
-        """Get list of all jobs.
+        """Get list of all jobs sorted by creation time (newest first).
 
         Returns:
-            List of all jobs
+            List of all jobs in reverse chronological order
         """
         with self._lock:
-            return list(self.jobs.values())
+            return sorted(
+                self.jobs.values(),
+                key=lambda job: job.created_at,
+                reverse=True,
+            )
 
     def run_job(
         self,
