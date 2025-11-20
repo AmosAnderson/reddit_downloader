@@ -43,7 +43,7 @@ def download_post(
             print(f"Fetching post {post_id}...")
 
         post = client.get_post(post_id)
-        downloader = MediaDownloader(output_dir)
+        downloader = MediaDownloader(output_dir, verbose=verbose)
 
         if verbose:
             print(f"Downloading media from: {post.title}")
@@ -100,7 +100,7 @@ def download_user(
             if limit:
                 print(f"Limit: {limit} posts")
 
-        downloader = MediaDownloader(output_dir)
+        downloader = MediaDownloader(output_dir, verbose=verbose)
         posts = client.get_user_posts(username, limit=limit)
 
         total_posts = 0

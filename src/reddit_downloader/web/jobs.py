@@ -138,7 +138,7 @@ class JobManager:
                 self.update_job(job_id, completed_items=1)
 
             elif parsed["url_type"] == URLType.USER:
-                # Download from user
+                # Download from user without pre-loading every submission
                 username = parsed["username"]
                 if not username:
                     self.update_job(
@@ -148,20 +148,28 @@ class JobManager:
                     )
                     return
 
-                posts = list(client.get_user_posts(username, limit=limit))
-                self.update_job(job_id, total_items=len(posts))
+                estimated_total = limit or 0
+                processed = 0
 
-                for index, post in enumerate(posts, start=1):
+                if estimated_total:
+                    self.update_job(job_id, total_items=estimated_total)
+
+                for post in client.get_user_posts(username, limit=limit):
+                    processed += 1
+                    total_items = estimated_total or processed
+
                     self.update_job(
                         job_id,
                         current_item=f"{post.title[:50]}...",
-                        completed_items=index - 1,
+                        completed_items=processed - 1,
+                        total_items=total_items,
                     )
 
                     post_results = downloader.download_post_media(post)
                     results.extend(post_results)
 
-                self.update_job(job_id, completed_items=len(posts))
+                final_total = processed or estimated_total
+                self.update_job(job_id, completed_items=processed, total_items=final_total)
 
             # Calculate success/failure counts
             success_count = sum(1 for r in results if r.success)

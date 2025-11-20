@@ -1,27 +1,42 @@
 """Media downloader for Reddit posts."""
 
+from __future__ import annotations
+
+import logging
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 from praw.models import Submission
 
 from reddit_downloader.types import DownloadResult, MediaInfo, MediaType
 
+logger = logging.getLogger(__name__)
+
 
 class MediaDownloader:
     """Download media files from Reddit posts."""
 
-    def __init__(self, output_dir: Path | str) -> None:
+    def __init__(self, output_dir: Path | str, *, verbose: bool = False) -> None:
         """Initialize media downloader.
 
         Args:
             output_dir: Directory where media files will be saved
+            verbose: Emit debug logging when True
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._verbose = verbose
+
+    def _log_debug(self, message: str) -> None:
+        """Emit debug logs only when verbose output is requested."""
+
+        if self._verbose:
+            logger.debug(message)
 
     def _sanitize_filename(self, filename: str) -> str:
         """Sanitize filename for filesystem compatibility.
@@ -39,16 +54,12 @@ class MediaDownloader:
             filename = filename[:200]
         return filename
 
-    def _extract_url_extension(self, url: str) -> str:
-        """Extract file extension from URL.
+    def _extract_url_extension(self, url: str, default: str = "jpg") -> str:
+        """Extract a file extension (without a dot) from a URL path."""
 
-        Args:
-            url: URL to extract extension from
-
-        Returns:
-            File extension without the dot
-        """
-        return url.split(".")[-1].split("?")[0]
+        path = urlparse(url).path
+        suffix = Path(path).suffix.lower().lstrip(".")
+        return suffix or default
 
     def _construct_audio_url(self, base_url: str, audio_variant: str) -> str:
         """Construct audio URL by replacing video DASH variant with audio variant.
@@ -155,16 +166,34 @@ class MediaDownloader:
         Returns:
             True if successful, False otherwise
         """
-        try:
-            response = requests.get(url, timeout=30, stream=True)
-            response.raise_for_status()
+        temp_path: Path | None = None
 
-            with open(filepath, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
+        try:
+            with requests.get(url, timeout=30, stream=True) as response:
+                response.raise_for_status()
+
+                filepath.parent.mkdir(parents=True, exist_ok=True)
+
+                with tempfile.NamedTemporaryFile(
+                    delete=False,
+                    dir=str(filepath.parent),
+                ) as tmp_file:
+                    temp_path = Path(tmp_file.name)
+
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            tmp_file.write(chunk)
+
+            if temp_path is not None:
+                temp_path.replace(filepath)
+
             return True
         except (requests.RequestException, OSError, IOError):
+            if temp_path is not None and temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
             return False
 
     def download_image(self, url: str, filename: str) -> Path | None:
@@ -183,6 +212,52 @@ class MediaDownloader:
         if self._download_file(url, filepath):
             return filepath
         return None
+
+    def _candidate_audio_urls(self, reddit_video: dict[str, Any]) -> list[str]:
+        """Build a list of possible audio stream URLs for a Reddit video."""
+
+        fallback_url = reddit_video.get("fallback_url")
+        if not fallback_url:
+            return []
+
+        possible_urls: list[str] = []
+
+        if audio_url := reddit_video.get("audio_url"):
+            possible_urls.append(audio_url)
+
+        if hls_url := reddit_video.get("hls_url"):
+            base_url = hls_url.rsplit("/", 1)[0]
+            possible_urls.extend(
+                [f"{base_url}/DASH_audio.mp4", f"{base_url}/DASH_audio_128.mp4"]
+            )
+
+        audio_variants = [
+            "DASH_audio_128.mp4",
+            "DASH_AUDIO_128.mp4",
+            "DASH_audio.mp4",
+            "DASH_AUDIO.mp4",
+        ]
+        possible_urls.extend(
+            self._construct_audio_url(fallback_url, variant)
+            for variant in audio_variants
+        )
+
+        base_fallback = fallback_url.split("?")[0]
+        if base_fallback != fallback_url:
+            possible_urls.extend(
+                self._construct_audio_url(base_fallback, variant)
+                for variant in ("DASH_audio_128.mp4", "DASH_audio.mp4")
+            )
+
+        unique_urls: list[str] = []
+        seen: set[str] = set()
+        for url in possible_urls:
+            if url == fallback_url or url in seen:
+                continue
+            seen.add(url)
+            unique_urls.append(url)
+
+        return unique_urls
 
     def download_video(self, post: Submission, filename: str) -> Path | None:
         """Download a Reddit-hosted video with audio.
@@ -215,47 +290,9 @@ class MediaDownloader:
         filepath = self.output_dir / safe_filename
 
         # Build list of possible audio URLs to try
-        possible_audio_urls = []
-
-        # Method 1: Check if audio_url is in the reddit_video dict
-        if "audio_url" in reddit_video:
-            possible_audio_urls.append(reddit_video["audio_url"])
-            print(f"Debug: Found audio_url in metadata: {reddit_video['audio_url']}")
-
-        # Method 2: Try HLS playlist URL
-        if "hls_url" in reddit_video:
-            base_url = reddit_video["hls_url"].rsplit("/", 1)[0]
-            possible_audio_urls.append(f"{base_url}/DASH_audio.mp4")
-            possible_audio_urls.append(f"{base_url}/DASH_audio_128.mp4")
-            print("Debug: Adding HLS-based audio URLs")
-
-        # Method 3: Construct from fallback URL by replacing DASH_xxx with DASH_audio
-        # Try different audio quality levels and capitalizations
-        audio_variants = [
-            "DASH_audio_128.mp4",
-            "DASH_AUDIO_128.mp4",
-            "DASH_audio.mp4",
-            "DASH_AUDIO.mp4",
-        ]
-        for variant in audio_variants:
-            possible_audio_urls.append(self._construct_audio_url(video_url, variant))
-
-        # Try the base URL structure without query params
-        base_video_url = video_url.split("?")[0]
-        if base_video_url != video_url:
-            for variant in ["DASH_audio_128.mp4", "DASH_audio.mp4"]:
-                possible_audio_urls.append(self._construct_audio_url(base_video_url, variant))
-
-        # Remove duplicates while preserving order
-        seen = set()
-        unique_audio_urls = []
-        for url in possible_audio_urls:
-            if url not in seen and url != video_url:
-                seen.add(url)
-                unique_audio_urls.append(url)
-
-        print(f"Debug: Video URL: {video_url}")
-        print(f"Debug: Will try {len(unique_audio_urls)} audio URL(s)")
+        unique_audio_urls = self._candidate_audio_urls(reddit_video)
+        self._log_debug(f"Video URL: {video_url}")
+        self._log_debug(f"Trying {len(unique_audio_urls)} candidate audio URL(s)")
 
         # Download video stream
         video_temp = self.output_dir / f"temp_video_{safe_filename}"
@@ -270,22 +307,22 @@ class MediaDownloader:
             has_audio = False
 
             if not unique_audio_urls:
-                print("Debug: No audio URLs could be constructed")
+                self._log_debug("No audio URLs could be constructed")
             else:
                 for i, try_url in enumerate(unique_audio_urls):
-                    print(f"Debug: Trying audio URL #{i + 1}/{len(unique_audio_urls)}: {try_url}")
+                    self._log_debug(
+                        f"Trying audio URL {i + 1}/{len(unique_audio_urls)}: {try_url}"
+                    )
                     if self._download_file(try_url, audio_temp):
                         if audio_temp.stat().st_size > 0:
-                            print(
-                                f"Debug: Audio downloaded successfully "
-                                f"({audio_temp.stat().st_size} bytes)"
+                            self._log_debug(
+                                f"Audio downloaded successfully ({audio_temp.stat().st_size} bytes)"
                             )
                             has_audio = True
                             break
-                        else:
-                            print("Debug: Empty file, trying next URL")
+                        self._log_debug("Audio file empty, trying next URL")
                     else:
-                        print("Debug: Download failed, trying next URL")
+                        self._log_debug("Audio download failed, trying next URL")
 
             if has_audio and audio_temp.stat().st_size > 0:
                 # Try to merge video and audio using ffmpeg
@@ -293,23 +330,22 @@ class MediaDownloader:
 
                 if merge_success:
                     # Success! Clean up temp files and return
-                    print("Debug: Video and audio merged successfully!")
                     return filepath
                 else:
                     # Merge failed, fall back to video only
-                    print(
-                        f"Warning: ffmpeg merge failed for {filename}, saving video without audio"
+                    logger.warning(
+                        "ffmpeg merge failed for %s, saving video without audio",
+                        filename,
                     )
                     video_temp.rename(filepath)
                     return filepath
             else:
                 # No audio stream available
-                print("Debug: No audio stream found or audio file is empty")
                 video_temp.rename(filepath)
                 return filepath
 
         except (requests.RequestException, OSError, IOError) as e:
-            print(f"Error downloading video {filename}: {e}")
+            logger.error("Error downloading video %s: %s", filename, e)
             return None
         finally:
             # Clean up temp files if they still exist
@@ -355,10 +391,10 @@ class MediaDownloader:
             )
             return True
         except FileNotFoundError:
-            print("Warning: ffmpeg not found. Install ffmpeg to download videos with audio.")
+            logger.warning("ffmpeg not found. Install ffmpeg to download videos with audio.")
             return False
         except subprocess.CalledProcessError as e:
-            print(f"Warning: ffmpeg merge failed: {e.stderr}")
+            logger.warning("ffmpeg merge failed: %s", e.stderr)
             return False
 
     def download_gallery(self, post: Submission, base_filename: str) -> list[Path]:

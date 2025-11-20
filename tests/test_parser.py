@@ -21,6 +21,8 @@ class TestValidateRedditUrl:
             "https://www.reddit.com/user/testuser",
             "https://old.reddit.com/r/test",
             "https://new.reddit.com/u/testuser",
+            "https://redd.it/abc123",
+            "https://v.redd.it/abc123",
         ]
 
         for url in valid_urls:
@@ -70,6 +72,16 @@ class TestExtractPostId:
         """Test extracting post ID from simple post URL."""
         url = "https://reddit.com/r/test/comments/def456/title"
         assert extract_post_id(url) == "def456"
+
+    def test_extract_from_comments_root_url(self) -> None:
+        """Test extracting post ID from /comments/<id> URL."""
+        url = "https://www.reddit.com/comments/ghi789/something"
+        assert extract_post_id(url) == "ghi789"
+
+    def test_extract_from_shortlink(self) -> None:
+        """Test extracting post ID from redd.it shortlink."""
+        url = "https://redd.it/jkl012"
+        assert extract_post_id(url) == "jkl012"
 
     def test_invalid_url_raises_error(self) -> None:
         """Test that invalid URL raises ValueError."""
@@ -122,3 +134,12 @@ class TestParseUrl:
         result = parse_url(url)
 
         assert result["url_type"] == URLType.INVALID
+
+    def test_parse_shortlink_url(self) -> None:
+        """Test parsing redd.it shortlink as post URL."""
+        url = "https://redd.it/mno345"
+        result = parse_url(url)
+
+        assert result["url_type"] == URLType.POST
+        assert result["post_id"] == "mno345"
+        assert result["username"] is None

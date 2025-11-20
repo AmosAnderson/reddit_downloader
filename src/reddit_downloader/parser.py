@@ -16,21 +16,18 @@ class ParsedURL(TypedDict):
 
 
 def validate_reddit_url(url: str) -> bool:
-    """Validate if a URL is a Reddit URL.
+    """Validate if a URL belongs to Reddit or supported short domains."""
 
-    Args:
-        url: URL to validate
-
-    Returns:
-        True if URL is a valid Reddit URL, False otherwise
-    """
     parsed = urlparse(url)
-    return parsed.netloc in (
-        "reddit.com",
-        "www.reddit.com",
-        "old.reddit.com",
-        "new.reddit.com",
-    )
+    netloc = parsed.netloc.lower()
+
+    if not netloc:
+        return False
+
+    if netloc.endswith(".reddit.com") or netloc == "reddit.com":
+        return True
+
+    return netloc in {"redd.it", "www.redd.it", "v.redd.it"}
 
 
 def extract_username(url: str) -> str:
@@ -56,54 +53,58 @@ def extract_username(url: str) -> str:
 
 
 def extract_post_id(url: str) -> str:
-    """Extract post ID from a Reddit post URL.
+    """Extract post ID from a Reddit post URL or shortlink."""
 
-    Args:
-        url: Reddit post URL
+    parsed = urlparse(url)
+    netloc = parsed.netloc.lower()
+    path_parts = [part for part in parsed.path.split("/") if part]
 
-    Returns:
-        Post ID extracted from URL
-
-    Raises:
-        ValueError: If URL is not a valid post URL
-    """
-    # Match patterns like:
-    # https://www.reddit.com/r/subreddit/comments/post_id/...
-    # The post ID is a unique alphanumeric string
-    pattern = r"reddit\.com/r/[^/]+/comments/([a-z0-9]+)"
-    match = re.search(pattern, url)
-    if not match:
+    # Handle redd.it and v.redd.it shortlinks
+    if netloc in {"redd.it", "www.redd.it", "v.redd.it"}:
+        if path_parts:
+            return path_parts[0].lower()
         raise ValueError(f"Could not extract post ID from URL: {url}")
-    return match.group(1)
+
+    if not (netloc.endswith(".reddit.com") or netloc == "reddit.com"):
+        raise ValueError(f"Could not extract post ID from URL: {url}")
+
+    if len(path_parts) >= 4 and path_parts[0] == "r" and path_parts[2] == "comments":
+        return path_parts[3].lower()
+
+    if len(path_parts) >= 2 and path_parts[0] == "comments":
+        return path_parts[1].lower()
+
+    # Fallback to regex search for robustness
+    match = re.search(r"comments/([a-z0-9]+)", parsed.path, re.IGNORECASE)
+    if match:
+        return match.group(1).lower()
+
+    raise ValueError(f"Could not extract post ID from URL: {url}")
 
 
 def parse_url(url: str) -> ParsedURL:
-    """Parse a Reddit URL to determine its type and extract relevant information.
+    """Parse a Reddit URL to determine its type and extract relevant information."""
 
-    Args:
-        url: Reddit URL to parse
-
-    Returns:
-        ParsedURL dictionary containing url_type and extracted information
-    """
     if not validate_reddit_url(url):
         return ParsedURL(url_type=URLType.INVALID, username=None, post_id=None)
 
-    # Check if it's a user URL
-    if re.search(r"reddit\.com/(?:user|u)/", url):
-        try:
-            username = extract_username(url)
-            return ParsedURL(url_type=URLType.USER, username=username, post_id=None)
-        except ValueError:
-            return ParsedURL(url_type=URLType.INVALID, username=None, post_id=None)
+    parsed = urlparse(url)
+    netloc = parsed.netloc.lower()
+    path_parts = [part for part in parsed.path.split("/") if part]
 
-    # Check if it's a post URL
-    if re.search(r"reddit\.com/r/[^/]+/comments/", url):
-        try:
-            post_id = extract_post_id(url)
-            return ParsedURL(url_type=URLType.POST, username=None, post_id=post_id)
-        except ValueError:
-            return ParsedURL(url_type=URLType.INVALID, username=None, post_id=None)
+    # User URLs: https://www.reddit.com/user/<name> or /u/<name>
+    if netloc.endswith(".reddit.com") or netloc == "reddit.com":
+        if path_parts and path_parts[0] in {"user", "u"}:
+            try:
+                username = extract_username(url)
+                return ParsedURL(url_type=URLType.USER, username=username, post_id=None)
+            except ValueError:
+                return ParsedURL(url_type=URLType.INVALID, username=None, post_id=None)
 
-    # If we get here, it's a Reddit URL but not a recognized type
-    return ParsedURL(url_type=URLType.INVALID, username=None, post_id=None)
+    # Post URLs (including shortlinks)
+    try:
+        post_id = extract_post_id(url)
+    except ValueError:
+        return ParsedURL(url_type=URLType.INVALID, username=None, post_id=None)
+
+    return ParsedURL(url_type=URLType.POST, username=None, post_id=post_id)
