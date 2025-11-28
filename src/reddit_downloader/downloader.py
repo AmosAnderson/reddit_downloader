@@ -1,7 +1,5 @@
 """Media downloader for Reddit posts."""
 
-from __future__ import annotations
-
 import logging
 import re
 import subprocess

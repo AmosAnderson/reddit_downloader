@@ -2,7 +2,7 @@
 
 import os
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, Self
 
 import praw
 from dotenv import load_dotenv
@@ -50,7 +50,7 @@ class RedditClient:
             check_for_async=False,
         )
 
-    def __enter__(self) -> "RedditClient":
+    def __enter__(self) -> Self:
         """Context manager entry."""
         return self
 
