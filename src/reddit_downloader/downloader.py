@@ -225,9 +225,7 @@ class MediaDownloader:
 
         if hls_url := reddit_video.get("hls_url"):
             base_url = hls_url.rsplit("/", 1)[0]
-            possible_urls.extend(
-                [f"{base_url}/DASH_audio.mp4", f"{base_url}/DASH_audio_128.mp4"]
-            )
+            possible_urls.extend([f"{base_url}/DASH_audio.mp4", f"{base_url}/DASH_audio_128.mp4"])
 
         audio_variants = [
             "DASH_audio_128.mp4",
@@ -236,8 +234,7 @@ class MediaDownloader:
             "DASH_AUDIO.mp4",
         ]
         possible_urls.extend(
-            self._construct_audio_url(fallback_url, variant)
-            for variant in audio_variants
+            self._construct_audio_url(fallback_url, variant) for variant in audio_variants
         )
 
         base_fallback = fallback_url.split("?")[0]
@@ -308,9 +305,7 @@ class MediaDownloader:
                 self._log_debug("No audio URLs could be constructed")
             else:
                 for i, try_url in enumerate(unique_audio_urls):
-                    self._log_debug(
-                        f"Trying audio URL {i + 1}/{len(unique_audio_urls)}: {try_url}"
-                    )
+                    self._log_debug(f"Trying audio URL {i + 1}/{len(unique_audio_urls)}: {try_url}")
                     if self._download_file(try_url, audio_temp):
                         if audio_temp.stat().st_size > 0:
                             self._log_debug(
