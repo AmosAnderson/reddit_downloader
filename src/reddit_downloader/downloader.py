@@ -480,7 +480,7 @@ class MediaDownloader:
             # Download gallery
             downloaded_files = self.download_gallery(post, base_filename)
 
-            for _index, filepath in enumerate(downloaded_files, start=1):
+            for filepath in downloaded_files:
                 media_info = self._create_media_info(post, MediaType.GALLERY, filepath.name)
                 results.append(self._create_download_result(filepath, media_info))
 
