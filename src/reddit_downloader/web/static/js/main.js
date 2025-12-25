@@ -92,20 +92,38 @@ function handlePaste(e) {
 
 // URL Extraction
 function extractRedditUrl(text) {
-    // Try to find Reddit URL in text
-    const urlPattern = /https?:\/\/(www\.)?(old\.|new\.)?reddit\.com\/[^\s]+/g;
+    // Try to find Reddit URL in text (including shortlinks)
+    const urlPattern = /https?:\/\/(www\.)?(old\.|new\.)?(reddit\.com|redd\.it|v\.redd\.it)\/[^\s]*/g;
     const matches = text.match(urlPattern);
 
     if (matches && matches.length > 0) {
         return matches[0];
     }
 
-    // If text looks like a URL itself
-    if (text.includes('reddit.com')) {
+    // If text looks like a URL itself (check for reddit.com or redd.it)
+    if (isValidRedditUrl(text.trim())) {
         return text.trim();
     }
 
     return null;
+}
+
+// Check if a URL is a valid Reddit URL (matches backend validation)
+function isValidRedditUrl(url) {
+    try {
+        const parsed = new URL(url);
+        const host = parsed.hostname.toLowerCase();
+        
+        // Check for reddit.com (including subdomains like www, old, new)
+        if (host === 'reddit.com' || host.endsWith('.reddit.com')) {
+            return true;
+        }
+        
+        // Check for shortlink domains
+        return ['redd.it', 'www.redd.it', 'v.redd.it'].includes(host);
+    } catch {
+        return false;
+    }
 }
 
 // Download
@@ -117,7 +135,7 @@ async function handleDownload() {
         return;
     }
 
-    if (!url.includes('reddit.com')) {
+    if (!isValidRedditUrl(url)) {
         showToast('Please enter a valid Reddit URL', 'error');
         return;
     }
