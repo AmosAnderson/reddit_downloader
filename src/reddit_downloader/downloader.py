@@ -317,7 +317,7 @@ class MediaDownloader:
                     else:
                         self._log_debug("Audio download failed, trying next URL")
 
-            if has_audio and audio_temp.stat().st_size > 0:
+            if has_audio:
                 # Try to merge video and audio using ffmpeg
                 merge_success = self._merge_video_audio(video_temp, audio_temp, filepath)
 

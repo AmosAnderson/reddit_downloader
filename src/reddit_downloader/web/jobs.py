@@ -158,15 +158,22 @@ class JobManager:
                     processed += 1
                     total_items = estimated_total or processed
 
+                    # Truncate long titles for display
+                    display_title = post.title[:50] + "..." if len(post.title) > 50 else post.title
+
                     self.update_job(
                         job_id,
-                        current_item=f"{post.title[:50]}...",
-                        completed_items=processed - 1,
+                        current_item=display_title,
                         total_items=total_items,
                     )
 
                     post_results = downloader.download_post_media(post)
                     results.extend(post_results)
+
+                    self.update_job(
+                        job_id,
+                        completed_items=processed,
+                    )
 
                 final_total = processed or estimated_total
                 self.update_job(job_id, completed_items=processed, total_items=final_total)

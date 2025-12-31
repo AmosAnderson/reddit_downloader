@@ -45,7 +45,7 @@ def extract_username(url: str) -> str:
     # Match patterns like:
     # https://www.reddit.com/user/username
     # https://www.reddit.com/u/username
-    pattern = r"reddit\.com/(?:user|u)/([^/]+)"
+    pattern = r"reddit\.com/(?:user|u)/([^/?#]+)"
     match = re.search(pattern, url)
     if not match:
         raise ValueError(f"Could not extract username from URL: {url}")
