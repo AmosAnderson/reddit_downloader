@@ -1,40 +1,77 @@
 """Flask web application for reddit_downloader."""
 
-import io
+import logging
+import shutil
 import tarfile
+import tempfile
 import webbrowser
 import zipfile
 from pathlib import Path
 from threading import Timer
-from typing import Any
+from typing import Any, cast
 
 import zstandard as zstd
-from flask import Flask, Response, render_template, request, send_file
+from flask import Flask, Response, current_app, g, render_template, request, send_file
 from werkzeug.exceptions import BadRequest
 
 from reddit_downloader.client import RedditClient
 from reddit_downloader.parser import validate_reddit_url
 from reddit_downloader.web.jobs import JobManager
 
-# Global job manager (will be initialized when server starts)
-job_manager: JobManager | None = None
-reddit_client: RedditClient | None = None
-output_directory: Path | None = None
+logger = logging.getLogger(__name__)
 
 
-def create_app() -> Flask:
+class RedditDownloaderApp(Flask):
+    """Flask app with typed dependencies."""
+
+    job_manager: JobManager
+    reddit_client: RedditClient | None
+    output_directory: Path | None
+
+
+def _get_app() -> RedditDownloaderApp:
+    """Return the current app with typed attributes."""
+    return cast(RedditDownloaderApp, current_app)
+
+
+def create_app(
+    reddit_client: RedditClient | None = None,
+    output_dir: Path | None = None,
+) -> RedditDownloaderApp:
     """Create and configure Flask application.
+
+    Args:
+        reddit_client: Reddit API client instance
+        output_dir: Output directory for downloads
 
     Returns:
         Configured Flask app
     """
-    app = Flask(__name__)
+    app = RedditDownloaderApp(__name__)
     app.config["JSON_SORT_KEYS"] = False
+
+    # Store dependencies in app config
+    app.job_manager = JobManager()
+    app.reddit_client = reddit_client
+    app.output_directory = output_dir
+
+    @app.before_request
+    def before_request() -> None:
+        """Set up request context."""
+        import uuid
+        g.request_id = str(uuid.uuid4())
+        logger.debug(f"Request {g.request_id}: {request.method} {request.path}")
 
     @app.route("/")
     def index() -> str:
         """Render main page."""
         return render_template("index.html")
+
+    @app.route("/health")
+    def health() -> tuple[dict[str, str], int]:
+        """Health check endpoint."""
+        import time
+        return {"status": "ok", "timestamp": str(time.time())}, 200
 
     @app.route("/api/download", methods=["POST"])
     def api_download() -> tuple[dict[str, str | bool], int]:
@@ -61,12 +98,27 @@ def create_app() -> Flask:
         if not validate_reddit_url(url):
             return {"success": False, "error": "Invalid Reddit URL"}, 400
 
+        # Validate limit parameter
+        if limit is not None:
+            if not isinstance(limit, int) or limit < 1 or limit > 1000:
+                return {
+                    "success": False,
+                    "error": "Limit must be an integer between 1 and 1000",
+                }, 400
+
+        app_context = _get_app()
+        job_manager = app_context.job_manager
+        reddit_client = app_context.reddit_client
+        output_directory = app_context.output_directory
+
         if job_manager is None or reddit_client is None or output_directory is None:
             return {"success": False, "error": "Server not properly initialized"}, 500
 
         # Create and start job
         job_id = job_manager.create_job(url, limit)
         job_manager.start_job(job_id, reddit_client, output_directory, limit)
+
+        logger.info(f"Started job {job_id} for URL: {url}")
 
         return {
             "success": True,
@@ -84,6 +136,7 @@ def create_app() -> Flask:
         Returns:
             JSON response with job status
         """
+        job_manager = _get_app().job_manager
         if job_manager is None:
             return {"success": False, "error": "Server not properly initialized"}, 500
 
@@ -111,6 +164,7 @@ def create_app() -> Flask:
         Returns:
             JSON response with list of jobs
         """
+        job_manager = _get_app().job_manager
         if job_manager is None:
             return {"success": False, "error": "Server not properly initialized"}, 500
 
@@ -141,12 +195,14 @@ def create_app() -> Flask:
         Returns:
             JSON response indicating success
         """
+        job_manager = _get_app().job_manager
         if job_manager is None:
             return {"success": False, "error": "Server not properly initialized"}, 500
 
         success = job_manager.cancel_job(job_id)
 
         if success:
+            logger.info(f"Cancelled job {job_id}")
             return {"success": True, "message": "Job cancelled"}, 200
         else:
             return {"success": False, "error": "Job not found or cannot be cancelled"}, 400
@@ -158,6 +214,7 @@ def create_app() -> Flask:
         Returns:
             JSON response with server config
         """
+        output_directory = _get_app().output_directory
         if output_directory is None:
             return {"success": False, "error": "Server not properly initialized"}, 500
 
@@ -176,6 +233,7 @@ def create_app() -> Flask:
         Returns:
             JSON response with list of files
         """
+        job_manager = _get_app().job_manager
         if job_manager is None:
             return {"success": False, "error": "Server not properly initialized"}, 500
 
@@ -211,7 +269,11 @@ def create_app() -> Flask:
         Returns:
             File download response
         """
-        if job_manager is None:
+        app_context = _get_app()
+        job_manager = app_context.job_manager
+        output_directory = app_context.output_directory
+
+        if job_manager is None or output_directory is None:
             return {"success": False, "error": "Server not properly initialized"}, 500
 
         job = job_manager.get_job(job_id)
@@ -229,6 +291,15 @@ def create_app() -> Flask:
 
         file_path = result.file_path
 
+        # Validate path is within output directory (security check)
+        try:
+            if not file_path.resolve().is_relative_to(output_directory.resolve()):
+                logger.warning(f"Attempted access to file outside output dir: {file_path}")
+                return {"success": False, "error": "Invalid file path"}, 403
+        except ValueError:
+            logger.warning(f"Path validation failed for: {file_path}")
+            return {"success": False, "error": "Invalid file path"}, 403
+
         # Send file and delete after
         response = send_file(
             str(file_path),
@@ -236,15 +307,15 @@ def create_app() -> Flask:
             download_name=file_path.name,
         )
 
-        # Delete file after sending
+        # Delete file after sending (only if response successful)
         @response.call_on_close
         def cleanup() -> None:
             try:
                 if file_path.exists():
                     file_path.unlink()
-                    print(f"Deleted downloaded file: {file_path}")
+                    logger.info(f"Deleted downloaded file: {file_path}")
             except OSError as e:
-                print(f"Warning: Failed to delete file {file_path}: {e}")
+                logger.warning(f"Failed to delete file {file_path}: {e}")
 
         return response
 
@@ -261,7 +332,11 @@ def create_app() -> Flask:
         Returns:
             Archive download response
         """
-        if job_manager is None:
+        app_context = _get_app()
+        job_manager = app_context.job_manager
+        output_directory = app_context.output_directory
+
+        if job_manager is None or output_directory is None:
             return {"success": False, "error": "Server not properly initialized"}, 500
 
         job = job_manager.get_job(job_id)
@@ -282,62 +357,107 @@ def create_app() -> Flask:
         if not files:
             return {"success": False, "error": "No files available"}, 404
 
+        # Validate all paths are within output directory (security check)
+        output_root = output_directory.resolve()
+        validated_files: list[Path] = []
+        for file_path in files:
+            try:
+                if file_path.resolve().is_relative_to(output_root):
+                    validated_files.append(file_path)
+                else:
+                    logger.warning(f"Skipping file outside output dir: {file_path}")
+            except ValueError:
+                logger.warning(f"Path validation failed for: {file_path}")
+        files = validated_files
+
+        if not files:
+            return {"success": False, "error": "No valid files available"}, 404
+
         # Get archive format from query params
         archive_format = request.args.get("format", "zip").lower()
 
         if archive_format not in ["zip", "tar.zst"]:
             return {"success": False, "error": "Invalid format. Use 'zip' or 'tar.zst'"}, 400
 
-        # Create archive in memory
-        if archive_format == "zip":
-            archive_bytes = io.BytesIO()
-            with zipfile.ZipFile(archive_bytes, "w", zipfile.ZIP_DEFLATED) as zf:
-                for file_path in files:
-                    zf.write(str(file_path), arcname=file_path.name)
-            archive_bytes.seek(0)
-            mimetype = "application/zip"
-            extension = "zip"
-        else:  # tar.zst
-            # Create tar in memory first
-            tar_bytes = io.BytesIO()
-            with tarfile.open(fileobj=tar_bytes, mode="w") as tar:
-                for file_path in files:
-                    tar.add(str(file_path), arcname=file_path.name)
-            tar_bytes.seek(0)
+        # Create archive in temporary file instead of memory (avoids OOM)
+        try:
+            with tempfile.NamedTemporaryFile(
+                delete=False, suffix=f".{archive_format.replace('.', '_')}"
+            ) as temp_archive:
+                temp_path = Path(temp_archive.name)
 
-            # Compress with zstandard
-            cctx = zstd.ZstdCompressor(level=3)
-            archive_bytes = io.BytesIO(cctx.compress(tar_bytes.read()))
-            archive_bytes.seek(0)
-            mimetype = "application/zstd"
-            extension = "tar.zst"
+            if archive_format == "zip":
+                with zipfile.ZipFile(temp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for file_path in files:
+                        zf.write(str(file_path), arcname=file_path.name)
+                mimetype = "application/zip"
+                extension = "zip"
+            else:  # tar.zst
+                # Create tar first
+                tar_path = temp_path.with_suffix(".tar")
+                with tarfile.open(tar_path, mode="w") as tar:
+                    for file_path in files:
+                        tar.add(str(file_path), arcname=file_path.name)
 
-        # Clean job ID for filename
-        safe_job_id = "".join(c if c.isalnum() else "_" for c in job_id)
-        download_name = f"reddit_download_{safe_job_id}.{extension}"
+                # Compress with zstandard
+                cctx = zstd.ZstdCompressor(level=3)
+                with open(tar_path, "rb") as tar_file, open(temp_path, "wb") as zst_file:
+                    with cctx.stream_writer(zst_file) as compressor:
+                        shutil.copyfileobj(tar_file, compressor)
 
-        # Send archive
-        response = send_file(
-            archive_bytes,
-            mimetype=mimetype,
-            as_attachment=True,
-            download_name=download_name,
-        )
+                # Clean up tar file
+                tar_path.unlink()
+                mimetype = "application/zstd"
+                extension = "tar.zst"
 
-        # Delete all files after sending
-        @response.call_on_close
-        def cleanup() -> None:
-            deleted_count = 0
-            for file_path in files:
+            # Clean job ID for filename
+            safe_job_id = "".join(c if c.isalnum() else "_" for c in job_id)
+            download_name = f"reddit_download_{safe_job_id}.{extension}"
+
+            # Send archive
+            response = send_file(
+                str(temp_path),
+                mimetype=mimetype,
+                as_attachment=True,
+                download_name=download_name,
+            )
+
+            # Delete all files after sending
+            @response.call_on_close
+            def cleanup() -> None:
+                deleted_count = 0
+
+                # Delete temporary archive
                 try:
-                    if file_path.exists():
-                        file_path.unlink()
-                        deleted_count += 1
+                    if temp_path.exists():
+                        temp_path.unlink()
                 except OSError as e:
-                    print(f"Warning: Failed to delete file {file_path}: {e}")
-            print(f"Deleted {deleted_count}/{len(files)} files from archive download")
+                    logger.warning(f"Failed to delete temp archive {temp_path}: {e}")
 
-        return response
+                # Delete downloaded files only on success
+                if response.status_code != 200:
+                    logger.warning(
+                        "Archive download returned status %s; skipping source cleanup",
+                        response.status_code,
+                    )
+                    return
+
+                # Delete downloaded files
+                for file_path in files:
+                    try:
+                        if file_path.exists():
+                            file_path.unlink()
+                            deleted_count += 1
+                    except OSError as e:
+                        logger.warning(f"Failed to delete file {file_path}: {e}")
+
+                logger.info(f"Deleted {deleted_count}/{len(files)} files from archive download")
+
+            return response
+
+        except (OSError, IOError) as e:
+            logger.error(f"Failed to create archive: {e}")
+            return {"success": False, "error": f"Failed to create archive: {str(e)}"}, 500
 
     return app
 
@@ -381,10 +501,6 @@ def run_web_server(
     Returns:
         Exit code
     """
-    global job_manager, reddit_client, output_directory
-
-    # Initialize globals
-    job_manager = JobManager()
     output_directory = Path(output_dir)
 
     try:
@@ -394,10 +510,12 @@ def run_web_server(
             user_agent=user_agent,
         )
     except ValueError as e:
+        logger.error(f"Failed to initialize Reddit client: {e}")
         print(f"Error: {e}")
         return 1
 
-    app = create_app()
+    # Create app with dependencies
+    app = create_app(reddit_client=reddit_client, output_dir=output_directory)
 
     url = f"http://{host}:{port}"
     print(f"Starting Reddit Downloader web interface at {url}")
@@ -411,5 +529,6 @@ def run_web_server(
         app.run(host=host, port=port, debug=debug)
         return 0
     except Exception as e:
+        logger.error(f"Error running server: {e}")
         print(f"Error running server: {e}")
         return 1

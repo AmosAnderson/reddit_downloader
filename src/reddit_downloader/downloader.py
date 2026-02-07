@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 
 import requests
 from praw.models import Submission
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from reddit_downloader.types import DownloadResult, MediaInfo, MediaType
 
@@ -19,16 +21,35 @@ logger = logging.getLogger(__name__)
 class MediaDownloader:
     """Download media files from Reddit posts."""
 
-    def __init__(self, output_dir: Path | str, *, verbose: bool = False) -> None:
+    # Maximum file size (100MB)
+    MAX_FILE_SIZE = 100 * 1024 * 1024
+
+    def __init__(
+        self, output_dir: Path | str, *, verbose: bool = False, timeout: int = 300
+    ) -> None:
         """Initialize media downloader.
 
         Args:
             output_dir: Directory where media files will be saved
             verbose: Emit debug logging when True
+            timeout: Request timeout in seconds (default: 300)
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._verbose = verbose
+        self.timeout = timeout
+
+        # Configure session with retries
+        self.session = requests.Session()
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "HEAD"],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
 
     def _log_debug(self, message: str) -> None:
         """Emit debug logs only when verbose output is requested."""
@@ -167,8 +188,16 @@ class MediaDownloader:
         temp_path: Path | None = None
 
         try:
-            with requests.get(url, timeout=30, stream=True) as response:
+            with self.session.get(url, timeout=self.timeout, stream=True) as response:
                 response.raise_for_status()
+
+                # Check content length
+                content_length = response.headers.get("content-length")
+                if content_length and int(content_length) > self.MAX_FILE_SIZE:
+                    logger.warning(
+                        f"File too large: {content_length} bytes (max: {self.MAX_FILE_SIZE})"
+                    )
+                    return False
 
                 filepath.parent.mkdir(parents=True, exist_ok=True)
 
@@ -178,15 +207,42 @@ class MediaDownloader:
                 ) as tmp_file:
                     temp_path = Path(tmp_file.name)
 
+                    # Track downloaded size
+                    downloaded = 0
+                    size_exceeded = False
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:
+                            downloaded += len(chunk)
+                            if downloaded > self.MAX_FILE_SIZE:
+                                logger.warning(
+                                    f"File exceeded size limit: {downloaded} bytes"
+                                )
+                                size_exceeded = True
+                                break
                             tmp_file.write(chunk)
+
+                if size_exceeded:
+                    if temp_path is not None and temp_path.exists():
+                        try:
+                            temp_path.unlink()
+                        except OSError:
+                            pass
+                    return False
 
             if temp_path is not None:
                 temp_path.replace(filepath)
 
             return True
-        except (requests.RequestException, OSError, IOError):
+        except requests.RequestException as e:
+            logger.error(f"Download failed for {url}: {e}")
+            if temp_path is not None and temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+            return False
+        except (OSError, IOError) as e:
+            logger.error(f"File system error: {e}")
             if temp_path is not None and temp_path.exists():
                 try:
                     temp_path.unlink()
@@ -407,7 +463,8 @@ class MediaDownloader:
 
         media_metadata: dict[str, Any] = post.media_metadata
 
-        for index, (_media_id, media_item) in enumerate(media_metadata.items(), start=1):
+        for index, (media_id, media_item) in enumerate(media_metadata.items(), start=1):
+            logger.debug(f"Processing gallery item {media_id}")
             if media_item["status"] != "valid":
                 continue
 

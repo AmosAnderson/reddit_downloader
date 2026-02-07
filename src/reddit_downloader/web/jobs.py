@@ -1,5 +1,6 @@
 """Background job management for web interface."""
 
+import logging
 import threading
 import uuid
 from pathlib import Path
@@ -10,6 +11,8 @@ from reddit_downloader.downloader import MediaDownloader
 from reddit_downloader.parser import parse_url
 from reddit_downloader.types import DownloadJob, JobStatus, URLType
 
+logger = logging.getLogger(__name__)
+
 
 class JobManager:
     """Manage background download jobs."""
@@ -18,6 +21,7 @@ class JobManager:
         """Initialize job manager."""
         self.jobs: dict[str, DownloadJob] = {}
         self._lock = threading.Lock()
+        self._stop_events: dict[str, threading.Event] = {}
 
     def create_job(self, url: str, limit: int | None = None) -> str:
         """Create a new download job.
@@ -43,6 +47,8 @@ class JobManager:
                 error=None,
                 results=None,
             )
+            # Create stop event for this job
+            self._stop_events[job_id] = threading.Event()
 
         return job_id
 
@@ -104,6 +110,11 @@ class JobManager:
         if not job:
             return
 
+        stop_event = self._stop_events.get(job_id)
+        if not stop_event:
+            logger.error(f"No stop event found for job {job_id}")
+            return
+
         try:
             self.update_job(job_id, status=JobStatus.RUNNING)
 
@@ -121,6 +132,12 @@ class JobManager:
             results = []
 
             if parsed["url_type"] == URLType.POST:
+                # Check if cancelled
+                if stop_event.is_set():
+                    self.update_job(job_id, status=JobStatus.CANCELLED)
+                    logger.info(f"Job {job_id} cancelled before starting")
+                    return
+
                 # Download single post
                 post_id = parsed["post_id"]
                 if not post_id:
@@ -155,6 +172,12 @@ class JobManager:
                     self.update_job(job_id, total_items=estimated_total)
 
                 for post in client.get_user_posts(username, limit=limit):
+                    # Check if job was cancelled
+                    if stop_event.is_set():
+                        self.update_job(job_id, status=JobStatus.CANCELLED, results=results)
+                        logger.info(f"Job {job_id} cancelled after processing {processed} posts")
+                        return
+
                     processed += 1
                     total_items = estimated_total or processed
 
@@ -191,11 +214,17 @@ class JobManager:
             )
 
         except Exception as e:
+            logger.error(f"Job {job_id} failed with error: {e}", exc_info=True)
             self.update_job(
                 job_id,
                 status=JobStatus.FAILED,
                 error=str(e),
             )
+        finally:
+            # Clean up stop event
+            with self._lock:
+                if job_id in self._stop_events:
+                    del self._stop_events[job_id]
 
     def start_job(
         self,
@@ -222,9 +251,6 @@ class JobManager:
     def cancel_job(self, job_id: str) -> bool:
         """Cancel a running job.
 
-        Note: This currently only marks the job as cancelled.
-        Full implementation would need to interrupt the download thread.
-
         Args:
             job_id: Job ID
 
@@ -233,6 +259,9 @@ class JobManager:
         """
         job = self.get_job(job_id)
         if job and job.status in (JobStatus.QUEUED, JobStatus.RUNNING):
-            self.update_job(job_id, status=JobStatus.CANCELLED)
-            return True
+            # Signal the job to stop
+            if job_id in self._stop_events:
+                self._stop_events[job_id].set()
+                logger.info(f"Cancellation requested for job {job_id}")
+                return True
         return False

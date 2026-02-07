@@ -1,5 +1,6 @@
 """Reddit API client wrapper using PRAW."""
 
+import logging
 import os
 from collections.abc import Iterator
 from typing import Any, Self
@@ -7,9 +8,9 @@ from typing import Any, Self
 import praw
 from dotenv import load_dotenv
 from praw.models import Redditor, Submission
+from prawcore import exceptions as prawcore_exceptions
 
-# Load environment variables from .env file
-load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 class RedditClient:
@@ -20,6 +21,8 @@ class RedditClient:
         client_id: str | None = None,
         client_secret: str | None = None,
         user_agent: str | None = None,
+        *,
+        load_env: bool = True,
     ) -> None:
         """Initialize Reddit client.
 
@@ -28,10 +31,14 @@ class RedditClient:
             client_secret: Reddit API client secret (defaults to REDDIT_CLIENT_SECRET env var)
             user_agent: User agent string (defaults to REDDIT_USER_AGENT env var
                         or a default value)
+            load_env: Whether to load environment variables from .env file
 
         Raises:
             ValueError: If credentials are not provided or found in environment
         """
+        if load_env:
+            load_dotenv()
+
         self.client_id = client_id or os.getenv("REDDIT_CLIENT_ID")
         self.client_secret = client_secret or os.getenv("REDDIT_CLIENT_SECRET")
         self.user_agent = user_agent or os.getenv("REDDIT_USER_AGENT", "reddit_downloader/0.1.0")
@@ -69,7 +76,12 @@ class RedditClient:
             # Try to access read-only endpoint
             _ = self._reddit.read_only
             return True
-        except Exception:
+        except (
+            praw.exceptions.PRAWException,
+            prawcore_exceptions.PrawcoreException,
+            AttributeError,
+        ) as e:
+            logger.debug(f"Authentication check failed: {e}")
             return False
 
     def get_post(self, post_id: str) -> Submission:
