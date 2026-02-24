@@ -8,5 +8,4 @@ This package provides three interfaces:
 
 __version__ = "0.1.0"
 
-# Public API will be exported here
 __all__: list[str] = []

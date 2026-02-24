@@ -225,8 +225,10 @@ class MediaDownloader:
                     if temp_path is not None and temp_path.exists():
                         try:
                             temp_path.unlink()
-                        except OSError:
-                            pass
+                        except OSError as e:
+                            logger.warning(
+                                "Failed to delete oversized temp file %s: %s", temp_path, e
+                            )
                     return False
 
             if temp_path is not None:
@@ -238,16 +240,16 @@ class MediaDownloader:
             if temp_path is not None and temp_path.exists():
                 try:
                     temp_path.unlink()
-                except OSError:
-                    pass
+                except OSError as cleanup_err:
+                    logger.warning("Failed to delete temp file %s: %s", temp_path, cleanup_err)
             return False
-        except (OSError, IOError) as e:
+        except OSError as e:
             logger.error(f"File system error: {e}")
             if temp_path is not None and temp_path.exists():
                 try:
                     temp_path.unlink()
-                except OSError:
-                    pass
+                except OSError as cleanup_err:
+                    logger.warning("Failed to delete temp file %s: %s", temp_path, cleanup_err)
             return False
 
     def download_image(self, url: str, filename: str) -> Path | None:
@@ -323,15 +325,20 @@ class MediaDownloader:
             Path to downloaded file, or None if download failed
         """
         if not hasattr(post, "media") or not post.media:
+            logger.debug("Post %s has no media attribute; skipping video download", post.id)
             return None
 
         # Get video URL from media dict
         media_dict: dict[str, Any] = post.media
-        if "reddit_video" not in media_dict:
+        reddit_video = media_dict.get("reddit_video")
+        if not isinstance(reddit_video, dict):
+            logger.debug("Post %s media payload has no reddit_video dict; skipping", post.id)
             return None
 
-        reddit_video = media_dict["reddit_video"]
-        video_url = reddit_video["fallback_url"]
+        video_url = reddit_video.get("fallback_url")
+        if not isinstance(video_url, str) or not video_url:
+            logger.warning("reddit_video payload missing fallback_url for post %s", post.id)
+            return None
 
         # Add .mp4 extension if not present
         if not filename.lower().endswith(".mp4"):
@@ -390,10 +397,18 @@ class MediaDownloader:
                     return filepath
             else:
                 # No audio stream available
+                if unique_audio_urls:
+                    logger.warning(
+                        "All %d audio URL(s) failed for %s; saving video without audio",
+                        len(unique_audio_urls),
+                        filename,
+                    )
+                else:
+                    logger.debug("No audio stream found for %s", filename)
                 video_temp.rename(filepath)
                 return filepath
 
-        except (requests.RequestException, OSError, IOError) as e:
+        except (requests.RequestException, OSError) as e:
             logger.error("Error downloading video %s: %s", filename, e)
             return None
         finally:
@@ -403,8 +418,8 @@ class MediaDownloader:
                     video_temp.unlink()
                 if audio_temp.exists():
                     audio_temp.unlink()
-            except OSError:
-                pass
+            except OSError as e:
+                logger.warning("Failed to clean up temporary video files for %s: %s", filename, e)
 
     def _merge_video_audio(self, video_path: Path, audio_path: Path, output_path: Path) -> bool:
         """Merge video and audio streams using ffmpeg.
@@ -465,7 +480,12 @@ class MediaDownloader:
 
         for index, (media_id, media_item) in enumerate(media_metadata.items(), start=1):
             logger.debug(f"Processing gallery item {media_id}")
-            if media_item["status"] != "valid":
+            if media_item.get("status") != "valid":
+                logger.debug(
+                    "Skipping gallery item %s with status %r",
+                    media_id,
+                    media_item.get("status"),
+                )
                 continue
 
             # Get the largest available image
@@ -475,6 +495,7 @@ class MediaDownloader:
                 # Get the last (largest) preview
                 image_url = media_item["p"][-1]["u"]
             else:
+                logger.warning("Gallery item %s has no usable image URL; skipping", media_id)
                 continue
 
             # Decode HTML entities in URL
@@ -543,6 +564,9 @@ class MediaDownloader:
 
             # If no files were downloaded from gallery
             if not downloaded_files:
+                logger.warning(
+                    "No valid images could be downloaded from gallery in post %s", post.id
+                )
                 results.append(
                     self._create_download_result(None, None, "No valid images found in gallery")
                 )
@@ -559,6 +583,7 @@ class MediaDownloader:
                 results.append(self._create_download_result(filepath, media_info))
             else:
                 # External link that we can't handle
+                logger.debug("Skipping unsupported external link for post %s: %s", post.id, url)
                 results.append(
                     self._create_download_result(None, None, f"Unsupported external link: {url}")
                 )

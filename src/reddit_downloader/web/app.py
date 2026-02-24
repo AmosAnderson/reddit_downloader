@@ -4,6 +4,8 @@ import logging
 import shutil
 import tarfile
 import tempfile
+import time
+import uuid
 import webbrowser
 import zipfile
 from pathlib import Path
@@ -12,7 +14,6 @@ from typing import Any, cast
 
 import zstandard as zstd
 from flask import Flask, Response, current_app, g, render_template, request, send_file
-from werkzeug.exceptions import BadRequest
 
 from reddit_downloader.client import RedditClient
 from reddit_downloader.parser import validate_reddit_url
@@ -58,7 +59,6 @@ def create_app(
     @app.before_request
     def before_request() -> None:
         """Set up request context."""
-        import uuid
         g.request_id = str(uuid.uuid4())
         logger.debug(f"Request {g.request_id}: {request.method} {request.path}")
 
@@ -70,7 +70,6 @@ def create_app(
     @app.route("/health")
     def health() -> tuple[dict[str, str], int]:
         """Health check endpoint."""
-        import time
         return {"status": "ok", "timestamp": str(time.time())}, 200
 
     @app.route("/api/download", methods=["POST"])
@@ -86,11 +85,12 @@ def create_app(
         Returns:
             JSON response with job_id
         """
-        if not request.json:
-            raise BadRequest("Request must be JSON")
+        payload = request.get_json(silent=True)
+        if payload is None:
+            return {"success": False, "error": "Request must be valid JSON"}, 400
 
-        url = request.json.get("url")
-        limit = request.json.get("limit")
+        url = payload.get("url")
+        limit = payload.get("limit")
 
         if not url:
             return {"success": False, "error": "URL required"}, 400
@@ -111,7 +111,7 @@ def create_app(
         reddit_client = app_context.reddit_client
         output_directory = app_context.output_directory
 
-        if job_manager is None or reddit_client is None or output_directory is None:
+        if reddit_client is None or output_directory is None:
             return {"success": False, "error": "Server not properly initialized"}, 500
 
         # Create and start job
@@ -137,8 +137,6 @@ def create_app(
             JSON response with job status
         """
         job_manager = _get_app().job_manager
-        if job_manager is None:
-            return {"success": False, "error": "Server not properly initialized"}, 500
 
         job = job_manager.get_job(job_id)
 
@@ -165,8 +163,6 @@ def create_app(
             JSON response with list of jobs
         """
         job_manager = _get_app().job_manager
-        if job_manager is None:
-            return {"success": False, "error": "Server not properly initialized"}, 500
 
         jobs = job_manager.list_jobs()
 
@@ -196,8 +192,6 @@ def create_app(
             JSON response indicating success
         """
         job_manager = _get_app().job_manager
-        if job_manager is None:
-            return {"success": False, "error": "Server not properly initialized"}, 500
 
         success = job_manager.cancel_job(job_id)
 
@@ -234,8 +228,6 @@ def create_app(
             JSON response with list of files
         """
         job_manager = _get_app().job_manager
-        if job_manager is None:
-            return {"success": False, "error": "Server not properly initialized"}, 500
 
         job = job_manager.get_job(job_id)
 
@@ -273,7 +265,7 @@ def create_app(
         job_manager = app_context.job_manager
         output_directory = app_context.output_directory
 
-        if job_manager is None or output_directory is None:
+        if output_directory is None:
             return {"success": False, "error": "Server not properly initialized"}, 500
 
         job = job_manager.get_job(job_id)
@@ -336,7 +328,7 @@ def create_app(
         job_manager = app_context.job_manager
         output_directory = app_context.output_directory
 
-        if job_manager is None or output_directory is None:
+        if output_directory is None:
             return {"success": False, "error": "Server not properly initialized"}, 500
 
         job = job_manager.get_job(job_id)
@@ -406,7 +398,10 @@ def create_app(
                         shutil.copyfileobj(tar_file, compressor)
 
                 # Clean up tar file
-                tar_path.unlink()
+                try:
+                    tar_path.unlink()
+                except OSError as e:
+                    logger.warning("Failed to delete intermediate tar file %s: %s", tar_path, e)
                 mimetype = "application/zstd"
                 extension = "tar.zst"
 
@@ -455,7 +450,7 @@ def create_app(
 
             return response
 
-        except (OSError, IOError) as e:
+        except OSError as e:
             logger.error(f"Failed to create archive: {e}")
             return {"success": False, "error": f"Failed to create archive: {str(e)}"}, 500
 
@@ -529,6 +524,6 @@ def run_web_server(
         app.run(host=host, port=port, debug=debug)
         return 0
     except Exception as e:
-        logger.error(f"Error running server: {e}")
+        logger.exception("Error running server: %s", e)
         print(f"Error running server: {e}")
         return 1

@@ -260,6 +260,22 @@ class TestDownloadVideo:
 
     @patch.object(MediaDownloader, "_download_file")
     @patch.object(MediaDownloader, "_merge_video_audio")
+    def test_download_video_missing_fallback_url(
+        self, mock_merge: MagicMock, mock_download: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test video download gracefully handles missing fallback_url."""
+        downloader = MediaDownloader(tmp_path)
+        mock_post = MagicMock()
+        mock_post.id = "abc123"
+        mock_post.media = {"reddit_video": {"hls_url": "https://v.redd.it/abc123/HLSPlaylist.m3u8"}}
+
+        result = downloader.download_video(mock_post, "test")
+
+        assert result is None
+        mock_download.assert_not_called()
+
+    @patch.object(MediaDownloader, "_download_file")
+    @patch.object(MediaDownloader, "_merge_video_audio")
     def test_download_video_only(
         self, mock_merge: MagicMock, mock_download: MagicMock, tmp_path: Path
     ) -> None:

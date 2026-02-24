@@ -1,12 +1,15 @@
 """Tests for web application."""
 
+from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from flask.testing import FlaskClient
 
 from reddit_downloader.types import DownloadJob, DownloadResult, JobStatus
 from reddit_downloader.web import app
+from reddit_downloader.web.app import RedditDownloaderApp
 
 
 @pytest.fixture
@@ -24,7 +27,7 @@ def mock_reddit_client() -> MagicMock:
 @pytest.fixture
 def flask_app(
     mock_job_manager: MagicMock, mock_reddit_client: MagicMock, tmp_path: Path
-) -> object:
+) -> RedditDownloaderApp:
     """Configure Flask app with mocks."""
     test_app = app.create_app(
         reddit_client=mock_reddit_client, output_dir=tmp_path
@@ -34,11 +37,8 @@ def flask_app(
 
 
 @pytest.fixture
-def client(flask_app: object) -> object:
+def client(flask_app: RedditDownloaderApp) -> Generator[FlaskClient, None, None]:
     """Create Flask test client."""
-    from flask import Flask
-
-    assert isinstance(flask_app, Flask)
     flask_app.config["TESTING"] = True
     with flask_app.test_client() as test_client:
         yield test_client
@@ -47,19 +47,15 @@ def client(flask_app: object) -> object:
 class TestWebAppRoutes:
     """Test web application routes."""
 
-    def test_index(self, client: object) -> None:
+    def test_index(self, client: FlaskClient) -> None:
         """Test index route."""
-        from flask.testing import FlaskClient
-        assert isinstance(client, FlaskClient)
         response = client.get("/")
         assert response.status_code == 200
 
     def test_api_download_success(
-        self, client: object, mock_job_manager: MagicMock
+        self, client: FlaskClient, mock_job_manager: MagicMock
     ) -> None:
         """Test successful download API call."""
-        from flask.testing import FlaskClient
-        assert isinstance(client, FlaskClient)
         mock_job_manager.create_job.return_value = "test-job-id"
 
         response = client.post(
@@ -74,10 +70,8 @@ class TestWebAppRoutes:
         mock_job_manager.create_job.assert_called_once()
         mock_job_manager.start_job.assert_called_once()
 
-    def test_api_download_missing_url(self, client: object) -> None:
+    def test_api_download_missing_url(self, client: FlaskClient) -> None:
         """Test download API with missing URL."""
-        from flask.testing import FlaskClient
-        assert isinstance(client, FlaskClient)
         response = client.post("/api/download", json={"limit": None})
 
         assert response.status_code == 400
@@ -86,10 +80,8 @@ class TestWebAppRoutes:
         assert data["success"] is False
         assert "URL required" in data["error"]
 
-    def test_api_download_invalid_url(self, client: object) -> None:
+    def test_api_download_invalid_url(self, client: FlaskClient) -> None:
         """Test download API with invalid URL."""
-        from flask.testing import FlaskClient
-        assert isinstance(client, FlaskClient)
         response = client.post("/api/download", json={"url": "https://example.com"})
 
         assert response.status_code == 400
@@ -97,20 +89,34 @@ class TestWebAppRoutes:
         assert data["success"] is False
         assert "Invalid Reddit URL" in data["error"]
 
-    def test_api_download_no_json(self, client: object) -> None:
+    def test_api_download_no_json(self, client: FlaskClient) -> None:
         """Test download API without JSON payload."""
-        from flask.testing import FlaskClient
-        assert isinstance(client, FlaskClient)
         response = client.post("/api/download", data="not json")
 
-        assert response.status_code in (400, 415)
+        assert response.status_code == 400
+        data = response.get_json()
+        assert data is not None
+        assert data["success"] is False
+        assert "valid JSON" in data["error"]
+
+    def test_api_download_malformed_json(self, client: FlaskClient) -> None:
+        """Test download API with malformed JSON payload."""
+        response = client.post(
+            "/api/download",
+            data='{"url": "https://reddit.com/r/test/comments/abc123/test/",',
+            content_type="application/json",
+        )
+
+        assert response.status_code == 400
+        data = response.get_json()
+        assert data is not None
+        assert data["success"] is False
+        assert "valid JSON" in data["error"]
 
     def test_api_status_success(
-        self, client: object, mock_job_manager: MagicMock
+        self, client: FlaskClient, mock_job_manager: MagicMock
     ) -> None:
         """Test successful status check."""
-        from flask.testing import FlaskClient
-        assert isinstance(client, FlaskClient)
         mock_job = DownloadJob(
             job_id="test-job-id",
             url="https://reddit.com/r/test/comments/abc123/test/",
@@ -135,11 +141,9 @@ class TestWebAppRoutes:
         assert data["completed_items"] == 5
 
     def test_api_status_not_found(
-        self, client: object, mock_job_manager: MagicMock
+        self, client: FlaskClient, mock_job_manager: MagicMock
     ) -> None:
         """Test status check for non-existent job."""
-        from flask.testing import FlaskClient
-        assert isinstance(client, FlaskClient)
         mock_job_manager.get_job.return_value = None
 
         response = client.get("/api/status/nonexistent")
@@ -149,11 +153,9 @@ class TestWebAppRoutes:
         assert data["success"] is False
 
     def test_api_downloads(
-        self, client: object, mock_job_manager: MagicMock
+        self, client: FlaskClient, mock_job_manager: MagicMock
     ) -> None:
         """Test downloads list API."""
-        from flask.testing import FlaskClient
-        assert isinstance(client, FlaskClient)
         mock_jobs = [
             DownloadJob(
                 job_id="job1",
@@ -190,11 +192,9 @@ class TestWebAppRoutes:
         assert data["jobs"][1]["job_id"] == "job2"
 
     def test_api_cancel_success(
-        self, client: object, mock_job_manager: MagicMock
+        self, client: FlaskClient, mock_job_manager: MagicMock
     ) -> None:
         """Test successful job cancellation."""
-        from flask.testing import FlaskClient
-        assert isinstance(client, FlaskClient)
         mock_job_manager.cancel_job.return_value = True
 
         response = client.post("/api/cancel/test-job-id")
@@ -204,11 +204,9 @@ class TestWebAppRoutes:
         assert data["success"] is True
 
     def test_api_cancel_failure(
-        self, client: object, mock_job_manager: MagicMock
+        self, client: FlaskClient, mock_job_manager: MagicMock
     ) -> None:
         """Test failed job cancellation."""
-        from flask.testing import FlaskClient
-        assert isinstance(client, FlaskClient)
         mock_job_manager.cancel_job.return_value = False
 
         response = client.post("/api/cancel/test-job-id")
@@ -217,10 +215,8 @@ class TestWebAppRoutes:
         data = response.get_json()
         assert data["success"] is False
 
-    def test_api_config(self, client: object) -> None:
+    def test_api_config(self, client: FlaskClient) -> None:
         """Test config API."""
-        from flask.testing import FlaskClient
-        assert isinstance(client, FlaskClient)
         response = client.get("/api/config")
 
         assert response.status_code == 200
@@ -229,11 +225,9 @@ class TestWebAppRoutes:
         assert "output_dir" in data
 
     def test_api_files_success(
-        self, client: object, mock_job_manager: MagicMock, tmp_path: Path
+        self, client: FlaskClient, mock_job_manager: MagicMock, tmp_path: Path
     ) -> None:
         """Test files API with successful job."""
-        from flask.testing import FlaskClient
-        assert isinstance(client, FlaskClient)
         test_file = tmp_path / "test.jpg"
         test_file.write_text("test content")
 
@@ -265,11 +259,9 @@ class TestWebAppRoutes:
         assert data["files"][0]["filename"] == "test.jpg"
 
     def test_api_files_empty_results(
-        self, client: object, mock_job_manager: MagicMock
+        self, client: FlaskClient, mock_job_manager: MagicMock
     ) -> None:
         """Test files API with no results."""
-        from flask.testing import FlaskClient
-        assert isinstance(client, FlaskClient)
         mock_job = DownloadJob(
             job_id="test-job-id",
             url="https://reddit.com/r/test/comments/abc123/test/",

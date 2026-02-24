@@ -65,8 +65,8 @@ def download_post(
         for result in results:
             if result.success and result.file_path:
                 print(f"Downloaded: {result.file_path}")
-            elif not result.success and verbose:
-                print(f"Failed: {result.error}")
+            elif not result.success:
+                print(f"Failed: {result.error}", file=sys.stderr)
 
         return 0 if fail_count == 0 else 1
 
@@ -122,8 +122,8 @@ def download_user(
                         print(f"  Downloaded: {result.file_path}")
                 else:
                     total_failures += 1
-                    if verbose and result.error:
-                        print(f"  Failed: {result.error}")
+                    if result.error:
+                        print(f"  Failed: {result.error}", file=sys.stderr)
 
         print("\n=== Summary ===")
         print(f"Posts processed: {total_posts}")
