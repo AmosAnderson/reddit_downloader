@@ -201,13 +201,14 @@ uv run python -m reddit_downloader post <url> --verbose
 
 #### CLI Options:
 - `-o, --output DIR` - Output directory (default: `./downloads`)
-- `-l, --limit N` - Maximum number of posts to process (user mode only)
+- `-l, --limit N` - Maximum number of posts to process (user mode only, 1-1000)
 - `--client-id ID` - Reddit API client ID
 - `--client-secret SECRET` - Reddit API client secret
 - `--user-agent AGENT` - Custom user agent
 - `-v, --verbose` - Verbose output
 - `--port PORT` - Port for web server (web mode only, default: 5000)
 - `--host HOST` - Host for web server (web mode only, default: 127.0.0.1)
+- `--no-open-browser` - Do not automatically open a browser when starting the web server
 
 ### Library API
 

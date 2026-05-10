@@ -1,6 +1,7 @@
 """Command-line interface for reddit_downloader."""
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -8,6 +9,8 @@ from reddit_downloader.client import RedditClient
 from reddit_downloader.downloader import MediaDownloader
 from reddit_downloader.parser import parse_url
 from reddit_downloader.types import URLType
+
+MAX_USER_LIMIT = 1000
 
 
 def download_post(
@@ -233,12 +236,22 @@ def main() -> int:
         "--user-agent",
         help="Reddit API user agent (or set REDDIT_USER_AGENT env var)",
     )
+    web_parser.add_argument(
+        "--no-open-browser",
+        action="store_true",
+        help="Do not automatically open a browser when the web server starts",
+    )
 
     args = parser.parse_args()
 
     if not args.command:
         parser.print_help()
         return 1
+
+    if getattr(args, "verbose", False):
+        logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(name)s:%(message)s")
+    else:
+        logging.basicConfig(level=logging.WARNING, format="%(levelname)s:%(name)s:%(message)s")
 
     # Handle web command separately (will import web module only when needed)
     if args.command == "web":
@@ -252,9 +265,15 @@ def main() -> int:
                 client_id=args.client_id,
                 client_secret=args.client_secret,
                 user_agent=args.user_agent,
+                open_browser_on_start=not args.no_open_browser,
             )
         except ImportError as e:
             print(f"Error: Web interface not available: {e}", file=sys.stderr)
+            return 1
+
+    if args.command == "user" and args.limit is not None:
+        if args.limit < 1 or args.limit > MAX_USER_LIMIT:
+            print(f"Error: --limit must be between 1 and {MAX_USER_LIMIT}", file=sys.stderr)
             return 1
 
     # Initialize Reddit client for post/user commands

@@ -137,9 +137,7 @@ class TestJobManager:
 
     @patch("reddit_downloader.web.jobs.parse_url")
     @patch("reddit_downloader.web.jobs.MediaDownloader")
-    def test_run_job_invalid_url(
-        self, mock_downloader: MagicMock, mock_parse: MagicMock
-    ) -> None:
+    def test_run_job_invalid_url(self, mock_downloader: MagicMock, mock_parse: MagicMock) -> None:
         """Test running job with invalid URL."""
         manager = JobManager()
         job_id = manager.create_job("https://invalid.com")

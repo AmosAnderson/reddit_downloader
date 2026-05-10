@@ -46,9 +46,7 @@ class TestValidatePublicDownloadUrl:
             "fc00::1",
         ],
     )
-    def test_rejects_non_public_addresses(
-        self, mock_getaddrinfo: object, address: str
-    ) -> None:
+    def test_rejects_non_public_addresses(self, mock_getaddrinfo: object, address: str) -> None:
         """Test private, loopback, and link-local resolved addresses are rejected."""
         family = socket.AF_INET6 if ":" in address else socket.AF_INET
         mock_getaddrinfo.return_value = [  # type: ignore[attr-defined]

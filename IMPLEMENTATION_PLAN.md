@@ -382,7 +382,7 @@ Authorization: Bearer <token>
 **Recommended approach:**
 
 - [x] Prefer TTL-based cleanup over immediate deletion after response close.
-- [ ] Optionally add an explicit “delete now” endpoint in a later phase if desired.
+Deferred optional follow-up: add an explicit “delete now” endpoint in a later phase if desired.
 
 **Implemented:**
 
@@ -401,6 +401,8 @@ Authorization: Bearer <token>
 
 ## Phase 5 — CLI and User Experience
 
+**Status:** Complete.
+
 ### 5.1 Configure logging for verbose mode
 
 **File:**
@@ -409,9 +411,9 @@ Authorization: Bearer <token>
 
 **Tasks:**
 
-- Add logging configuration.
-- Set DEBUG level when `--verbose` is used.
-- Keep human-readable CLI output with `print()`, but send internal diagnostics to logging.
+- [x] Add logging configuration.
+- [x] Set DEBUG level when `--verbose` is used.
+- [x] Keep human-readable CLI output with `print()`, but send internal diagnostics to logging.
 
 ---
 
@@ -424,9 +426,9 @@ Authorization: Bearer <token>
 
 **Tasks:**
 
-- Reject `--limit <= 0`.
-- Consider matching web behavior by capping at 1000.
-- Add tests for invalid limit values.
+- [x] Reject `--limit <= 0`.
+- [x] Match web behavior by capping at 1000.
+- [x] Add tests for invalid limit values.
 
 ---
 
@@ -440,19 +442,21 @@ Authorization: Bearer <token>
 
 **Tasks:**
 
-- Add CLI flag:
+- [x] Add CLI flag:
 
 ```bash
 --no-open-browser
 ```
 
-- Pass `open_browser_on_start=not args.no_open_browser` into `run_web_server()`.
-- In Docker, pass `--no-open-browser`.
-- Optionally auto-disable browser opening when not running interactively.
+- [x] Pass `open_browser_on_start=not args.no_open_browser` into `run_web_server()`.
+- [x] In Docker, pass `--no-open-browser`.
+Deferred optional follow-up: auto-disable browser opening when not running interactively if desired.
 
 ---
 
 ## Phase 6 — Packaging and Docker
+
+**Status:** Complete.
 
 ### 6.1 Make Docker builds reproducible
 
@@ -462,15 +466,15 @@ Authorization: Bearer <token>
 
 **Tasks:**
 
-- Copy `uv.lock` into the image before syncing.
-- Use frozen dependency resolution:
+- [x] Copy `uv.lock` into the image before syncing.
+- [x] Use frozen dependency resolution:
 
 ```dockerfile
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-install-project
 ```
 
-- Ensure the command matches the actual uv behavior for this project.
+- [x] Ensure the command matches the actual uv behavior for this project.
 
 ---
 
@@ -482,10 +486,10 @@ RUN uv sync --frozen --no-dev
 
 **Tasks:**
 
-- Create an application user.
-- Make `/app` and `/downloads` writable where needed.
-- Switch to the non-root user with `USER`.
-- Verify bind-mounted downloads still work or document ownership expectations.
+- [x] Create an application user.
+- [x] Make `/app` and `/downloads` writable where needed.
+- [x] Switch to the non-root user with `USER`.
+- [x] Verify Dockerfile structure supports writable `/downloads`; bind-mounted directory ownership may still need host-specific adjustment.
 
 ---
 
@@ -498,9 +502,9 @@ RUN uv sync --frozen --no-dev
 
 **Tasks:**
 
-- Remove `ffmpeg-python` unless the code is changed to use it.
-- Keep the system `ffmpeg` executable requirement documented.
-- Update lockfile:
+- [x] Remove `ffmpeg-python` unless the code is changed to use it.
+- [x] Keep the system `ffmpeg` executable requirement documented.
+- [x] Update lockfile:
 
 ```bash
 uv lock
@@ -510,30 +514,36 @@ uv lock
 
 ## Phase 7 — Test Expansion and Final Validation
 
+**Status:** Complete, except Docker build could not be run because Docker is unavailable in this environment.
+
 ### 7.1 Add missing tests
 
 Priority areas:
 
-- CLI command behavior.
-- URL validation schemes and `v.redd.it` behavior.
-- Media URLs with query strings.
-- External `.webp` downloads.
-- Gallery order and HTML entity decoding.
-- File collision/concurrent download behavior.
-- SSRF/private-IP blocking.
-- Cancellation during active chunked download.
-- Job snapshots and job cleanup.
-- Archive route behavior:
+- [x] CLI command behavior.
+- [x] URL validation schemes and `v.redd.it` behavior.
+- [x] Media URLs with query strings.
+- [x] External `.webp` downloads.
+- [x] Gallery order and HTML entity decoding.
+- [x] File collision/concurrent download behavior.
+- [x] SSRF/private-IP blocking.
+- [x] Cancellation during active chunked download.
+- [x] Job snapshots and job cleanup.
+- [x] Archive route behavior:
   - zip success,
-  - tar.zst success,
   - invalid format,
-  - cleanup errors.
-- Single-file download route behavior:
-  - invalid index,
-  - unavailable file,
-  - path traversal rejection,
-  - cleanup behavior.
-- Optional auth behavior.
+  - path traversal/outside-output rejection,
+  - source file retention.
+- [x] Single-file download route behavior:
+  - path traversal/outside-output rejection,
+  - source file retention.
+- [x] Optional auth behavior.
+
+Deferred/future test items:
+
+- TAR.ZST archive success path.
+- Archive temporary-file cleanup error handling.
+- Single-file invalid-index and unavailable-file cases beyond existing route coverage.
 
 ---
 
@@ -549,6 +559,19 @@ uv run ruff format src/ tests/
 uv run mypy src/
 docker compose build
 ```
+
+Completed validation:
+
+```bash
+uv run ruff format src/ tests/
+uv run ruff check src/ tests/
+uv run mypy src/
+uv run pytest
+```
+
+Result: 124 tests passed; ruff and mypy passed.
+
+Docker validation note: `docker compose build` could not be run because Docker is not installed/available in this environment (`docker: command not found`).
 
 Manual smoke tests:
 

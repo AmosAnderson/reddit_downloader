@@ -261,9 +261,7 @@ class TestDownloadImage:
     """Test download_image method."""
 
     @patch.object(MediaDownloader, "_download_file")
-    def test_successful_image_download(
-        self, mock_download: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_successful_image_download(self, mock_download: MagicMock, tmp_path: Path) -> None:
         """Test successful image download."""
         downloader = MediaDownloader(tmp_path)
         mock_download.return_value = True
@@ -275,9 +273,7 @@ class TestDownloadImage:
         mock_download.assert_called_once()
 
     @patch.object(MediaDownloader, "_download_file")
-    def test_failed_image_download(
-        self, mock_download: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_failed_image_download(self, mock_download: MagicMock, tmp_path: Path) -> None:
         """Test failed image download."""
         downloader = MediaDownloader(tmp_path)
         mock_download.return_value = False
@@ -395,9 +391,7 @@ class TestDownloadGallery:
     """Test download_gallery method."""
 
     @patch.object(MediaDownloader, "download_image")
-    def test_download_gallery_success(
-        self, mock_download_image: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_download_gallery_success(self, mock_download_image: MagicMock, tmp_path: Path) -> None:
         """Test successful gallery download."""
         downloader = MediaDownloader(tmp_path)
         mock_post = MagicMock()
@@ -483,9 +477,7 @@ class TestDownloadPostMedia:
         assert result == []
 
     @patch.object(MediaDownloader, "download_image")
-    def test_download_post_image(
-        self, mock_download_image: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_download_post_image(self, mock_download_image: MagicMock, tmp_path: Path) -> None:
         """Test downloading post with image."""
         downloader = MediaDownloader(tmp_path)
         mock_post = MagicMock()
@@ -506,9 +498,7 @@ class TestDownloadPostMedia:
         mock_download_image.assert_called_once()
 
     @patch.object(MediaDownloader, "download_video")
-    def test_download_post_video(
-        self, mock_download_video: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_download_post_video(self, mock_download_video: MagicMock, tmp_path: Path) -> None:
         """Test downloading post with video."""
         downloader = MediaDownloader(tmp_path)
         mock_post = MagicMock()
@@ -552,9 +542,7 @@ class TestDownloadPostMedia:
         )
 
     @patch.object(MediaDownloader, "download_gallery")
-    def test_download_post_gallery(
-        self, mock_download_gallery: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_download_post_gallery(self, mock_download_gallery: MagicMock, tmp_path: Path) -> None:
         """Test downloading post with gallery."""
         downloader = MediaDownloader(tmp_path)
         mock_post = MagicMock()

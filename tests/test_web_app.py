@@ -29,9 +29,7 @@ def flask_app(
     mock_job_manager: MagicMock, mock_reddit_client: MagicMock, tmp_path: Path
 ) -> RedditDownloaderApp:
     """Configure Flask app with mocks."""
-    test_app = app.create_app(
-        reddit_client=mock_reddit_client, output_dir=tmp_path
-    )
+    test_app = app.create_app(reddit_client=mock_reddit_client, output_dir=tmp_path)
     test_app.job_manager = mock_job_manager
     return test_app
 
@@ -114,9 +112,7 @@ class TestWebAppRoutes:
         assert data["success"] is False
         assert "valid JSON" in data["error"]
 
-    def test_api_status_success(
-        self, client: FlaskClient, mock_job_manager: MagicMock
-    ) -> None:
+    def test_api_status_success(self, client: FlaskClient, mock_job_manager: MagicMock) -> None:
         """Test successful status check."""
         mock_job = DownloadJob(
             job_id="test-job-id",
@@ -141,9 +137,7 @@ class TestWebAppRoutes:
         assert data["total_items"] == 10
         assert data["completed_items"] == 5
 
-    def test_api_status_not_found(
-        self, client: FlaskClient, mock_job_manager: MagicMock
-    ) -> None:
+    def test_api_status_not_found(self, client: FlaskClient, mock_job_manager: MagicMock) -> None:
         """Test status check for non-existent job."""
         mock_job_manager.get_job.return_value = None
 
@@ -153,9 +147,7 @@ class TestWebAppRoutes:
         data = response.get_json()
         assert data["success"] is False
 
-    def test_api_downloads(
-        self, client: FlaskClient, mock_job_manager: MagicMock
-    ) -> None:
+    def test_api_downloads(self, client: FlaskClient, mock_job_manager: MagicMock) -> None:
         """Test downloads list API."""
         mock_jobs = [
             DownloadJob(
@@ -192,9 +184,7 @@ class TestWebAppRoutes:
         assert data["jobs"][0]["job_id"] == "job1"
         assert data["jobs"][1]["job_id"] == "job2"
 
-    def test_api_cancel_success(
-        self, client: FlaskClient, mock_job_manager: MagicMock
-    ) -> None:
+    def test_api_cancel_success(self, client: FlaskClient, mock_job_manager: MagicMock) -> None:
         """Test successful job cancellation."""
         mock_job_manager.cancel_job.return_value = True
 
@@ -204,9 +194,7 @@ class TestWebAppRoutes:
         data = response.get_json()
         assert data["success"] is True
 
-    def test_api_cancel_failure(
-        self, client: FlaskClient, mock_job_manager: MagicMock
-    ) -> None:
+    def test_api_cancel_failure(self, client: FlaskClient, mock_job_manager: MagicMock) -> None:
         """Test failed job cancellation."""
         mock_job_manager.cancel_job.return_value = False
 
@@ -298,6 +286,85 @@ class TestWebAppRoutes:
         assert response.status_code == 200
         assert test_file.exists()
 
+    def test_download_file_rejects_path_outside_output_dir(
+        self, client: FlaskClient, mock_job_manager: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test single-file download rejects files outside the configured output dir."""
+        outside_file = tmp_path.parent / "outside.jpg"
+        outside_file.write_text("test content")
+        mock_job_manager.get_job.return_value = DownloadJob(
+            job_id="test-job-id",
+            url="https://reddit.com/r/test/comments/abc123/test/",
+            status=JobStatus.COMPLETED,
+            results=[DownloadResult(success=True, file_path=outside_file)],
+        )
+
+        response = client.get("/api/download-file/test-job-id/0")
+
+        assert response.status_code == 403
+        assert outside_file.exists()
+
+    def test_download_archive_zip_retains_source_files(
+        self, client: FlaskClient, mock_job_manager: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test ZIP archive download succeeds and retains source files."""
+        test_file = tmp_path / "test.jpg"
+        test_file.write_text("test content")
+        mock_job_manager.get_job.return_value = DownloadJob(
+            job_id="test-job-id",
+            url="https://reddit.com/r/test/comments/abc123/test/",
+            status=JobStatus.COMPLETED,
+            results=[DownloadResult(success=True, file_path=test_file)],
+        )
+
+        response = client.get("/api/download-archive/test-job-id?format=zip")
+        response.close()
+
+        assert response.status_code == 200
+        assert response.mimetype == "application/zip"
+        assert test_file.exists()
+
+    def test_download_archive_invalid_format(
+        self, client: FlaskClient, mock_job_manager: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test archive download rejects unsupported formats."""
+        test_file = tmp_path / "test.jpg"
+        test_file.write_text("test content")
+        mock_job_manager.get_job.return_value = DownloadJob(
+            job_id="test-job-id",
+            url="https://reddit.com/r/test/comments/abc123/test/",
+            status=JobStatus.COMPLETED,
+            results=[DownloadResult(success=True, file_path=test_file)],
+        )
+
+        response = client.get("/api/download-archive/test-job-id?format=rar")
+
+        assert response.status_code == 400
+        data = response.get_json()
+        assert data is not None
+        assert data["success"] is False
+
+    def test_download_archive_rejects_files_outside_output_dir(
+        self, client: FlaskClient, mock_job_manager: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test archive downloads exclude/reject files outside the output dir."""
+        outside_file = tmp_path.parent / "outside-archive.jpg"
+        outside_file.write_text("test content")
+        mock_job_manager.get_job.return_value = DownloadJob(
+            job_id="test-job-id",
+            url="https://reddit.com/r/test/comments/abc123/test/",
+            status=JobStatus.COMPLETED,
+            results=[DownloadResult(success=True, file_path=outside_file)],
+        )
+
+        response = client.get("/api/download-archive/test-job-id?format=zip")
+
+        assert response.status_code == 404
+        data = response.get_json()
+        assert data is not None
+        assert data["success"] is False
+        assert outside_file.exists()
+
     def test_api_files_empty_results(
         self, client: FlaskClient, mock_job_manager: MagicMock
     ) -> None:
@@ -345,9 +412,7 @@ class TestWebAppAuth:
         assert data is not None
         assert data["success"] is False
 
-    def test_api_accepts_valid_token(
-        self, mock_reddit_client: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_api_accepts_valid_token(self, mock_reddit_client: MagicMock, tmp_path: Path) -> None:
         """Test API routes accept requests with the configured bearer token."""
         test_app = app.create_app(
             reddit_client=mock_reddit_client,
