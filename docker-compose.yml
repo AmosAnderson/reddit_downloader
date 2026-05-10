@@ -5,7 +5,7 @@ services:
     build: .
     container_name: reddit-downloader
     ports:
-      - "5000:5000"
+      - "127.0.0.1:5000:5000"
     volumes:
       # Mount local directory for downloads
       # Change ./downloads to your desired download location
@@ -15,6 +15,7 @@ services:
       - REDDIT_CLIENT_ID=${REDDIT_CLIENT_ID}
       - REDDIT_CLIENT_SECRET=${REDDIT_CLIENT_SECRET}
       - REDDIT_USER_AGENT=${REDDIT_USER_AGENT}
+      - REDDIT_DOWNLOADER_AUTH_TOKEN=${REDDIT_DOWNLOADER_AUTH_TOKEN:-}
     env_file:
       - .env
     restart: unless-stopped
@@ -29,6 +30,7 @@ services:
       - REDDIT_CLIENT_ID=${REDDIT_CLIENT_ID}
       - REDDIT_CLIENT_SECRET=${REDDIT_CLIENT_SECRET}
       - REDDIT_USER_AGENT=${REDDIT_USER_AGENT}
+      - REDDIT_DOWNLOADER_AUTH_TOKEN=${REDDIT_DOWNLOADER_AUTH_TOKEN:-}
     env_file:
       - .env
     # Override command for CLI usage

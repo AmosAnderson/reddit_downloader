@@ -1,5 +1,6 @@
 """Tests for job manager."""
 
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -59,6 +60,59 @@ class TestJobManager:
 
         # Should not raise error
         manager.update_job("nonexistent", status=JobStatus.RUNNING)
+
+    def test_update_rejects_unknown_fields(self) -> None:
+        """Test updating unknown job fields fails fast."""
+        manager = JobManager()
+        job_id = manager.create_job("https://reddit.com/r/test/comments/abc123/test/")
+
+        try:
+            manager.update_job(job_id, missing_field="value")
+        except ValueError as e:
+            assert "missing_field" in str(e)
+        else:
+            raise AssertionError("Expected ValueError")
+
+    def test_get_job_returns_snapshot(self) -> None:
+        """Test returned jobs cannot mutate manager state."""
+        manager = JobManager()
+        job_id = manager.create_job("https://reddit.com/r/test/comments/abc123/test/")
+
+        job = manager.get_job(job_id)
+        assert job is not None
+        job.status = JobStatus.COMPLETED
+
+        fresh_job = manager.get_job(job_id)
+        assert fresh_job is not None
+        assert fresh_job.status == JobStatus.QUEUED
+
+    def test_cleanup_jobs_removes_old_jobs_and_directory(self, tmp_path: Path) -> None:
+        """Test old terminal jobs and their directories are removed."""
+        manager = JobManager(max_job_age_seconds=60)
+        job_id = manager.create_job("https://reddit.com/r/test/comments/abc123/test/")
+        job_dir = tmp_path / job_id
+        job_dir.mkdir()
+        (job_dir / "file.jpg").write_text("data")
+        manager.update_job(job_id, status=JobStatus.COMPLETED)
+        with manager._lock:
+            manager.jobs[job_id].updated_at = datetime.now() - timedelta(seconds=120)
+
+        manager.cleanup_jobs(tmp_path)
+
+        assert manager.get_job(job_id) is None
+        assert not job_dir.exists()
+
+    def test_cleanup_jobs_keeps_running_jobs(self, tmp_path: Path) -> None:
+        """Test running jobs are not removed by cleanup."""
+        manager = JobManager(max_job_age_seconds=60)
+        job_id = manager.create_job("https://reddit.com/r/test/comments/abc123/test/")
+        manager.update_job(job_id, status=JobStatus.RUNNING)
+        with manager._lock:
+            manager.jobs[job_id].updated_at = datetime.now() - timedelta(seconds=120)
+
+        manager.cleanup_jobs(tmp_path)
+
+        assert manager.get_job(job_id) is not None
 
     def test_list_jobs(self) -> None:
         """Test listing jobs."""
@@ -124,6 +178,9 @@ class TestJobManager:
         assert job.status == JobStatus.COMPLETED
         assert job.completed_items == 1
         mock_client.get_post.assert_called_once_with("abc123")
+        mock_downloader_class.assert_called_once()
+        assert mock_downloader_class.call_args.args == (Path("/tmp") / job_id,)
+        assert "cancel_event" in mock_downloader_class.call_args.kwargs
         mock_downloader.download_post_media.assert_called_once_with(mock_post)
 
     @patch("reddit_downloader.web.jobs.parse_url")
@@ -159,6 +216,34 @@ class TestJobManager:
         mock_client.get_user_posts.assert_called_once_with("testuser", limit=2)
 
     @patch("reddit_downloader.web.jobs.parse_url")
+    @patch("reddit_downloader.web.jobs.MediaDownloader")
+    def test_run_job_cancelled_during_single_post(
+        self, mock_downloader_class: MagicMock, mock_parse: MagicMock
+    ) -> None:
+        """Test cancellation reported while a single post is downloading."""
+        manager = JobManager()
+        job_id = manager.create_job("https://reddit.com/r/test/comments/abc123/test/")
+        mock_parse.return_value = {"url_type": URLType.POST, "post_id": "abc123"}
+        mock_client = MagicMock()
+        mock_post = MagicMock()
+        mock_client.get_post.return_value = mock_post
+        mock_downloader = MagicMock()
+
+        def download_post_media(post: MagicMock) -> list[MagicMock]:
+            manager.cancel_job(job_id)
+            return [MagicMock(success=False)]
+
+        mock_downloader.download_post_media.side_effect = download_post_media
+        mock_downloader_class.return_value = mock_downloader
+
+        manager.run_job(job_id, mock_client, Path("/tmp"), None)
+
+        job = manager.get_job(job_id)
+        assert job is not None
+        assert job.status == JobStatus.CANCELLED
+        assert job.results is not None
+
+    @patch("reddit_downloader.web.jobs.parse_url")
     def test_run_job_exception(self, mock_parse: MagicMock) -> None:
         """Test running job with exception."""
         manager = JobManager()
@@ -172,6 +257,28 @@ class TestJobManager:
         assert job is not None
         assert job.status == JobStatus.FAILED
         assert "Test error" in str(job.error)
+
+    @patch("reddit_downloader.web.jobs.parse_url")
+    @patch("reddit_downloader.web.jobs.MediaDownloader")
+    def test_run_job_uses_client_factory(
+        self, mock_downloader_class: MagicMock, mock_parse: MagicMock
+    ) -> None:
+        """Test jobs can create a per-job Reddit client from a factory."""
+        manager = JobManager()
+        job_id = manager.create_job("https://reddit.com/r/test/comments/abc123/test/")
+        mock_parse.return_value = {"url_type": URLType.POST, "post_id": "abc123"}
+        mock_client = MagicMock()
+        mock_post = MagicMock()
+        mock_client.get_post.return_value = mock_post
+        factory = MagicMock(return_value=mock_client)
+        mock_downloader = MagicMock()
+        mock_downloader.download_post_media.return_value = [MagicMock(success=True)]
+        mock_downloader_class.return_value = mock_downloader
+
+        manager.run_job(job_id, None, Path("/tmp"), None, client_factory=factory)
+
+        factory.assert_called_once_with()
+        mock_client.get_post.assert_called_once_with("abc123")
 
     @patch("reddit_downloader.web.jobs.threading.Thread")
     def test_start_job(self, mock_thread: MagicMock) -> None:

@@ -9,7 +9,7 @@ Download media from Reddit posts and user profiles with support for images, vide
 - 🖼️ Support for images, videos (with audio), and galleries
 - 🌐 **Web interface with drag-and-drop support**
 - 💾 **Download via browser with ZIP or TAR.ZST compression**
-- 🗑️ **Automatic file cleanup after download**
+- 🗑️ **Automatic cleanup of old completed jobs and files**
 - 📚 Library API for programmatic use
 - ⌨️ Command-line interface
 - 🐳 **Docker support with configurable volumes**
@@ -57,6 +57,8 @@ docker-compose up -d
 
 4. Open http://localhost:5000 in your browser
 
+By default, Docker Compose binds the web interface to `127.0.0.1` only. Do not expose the web interface publicly unless you put it behind appropriate authentication/network controls.
+
 **That's it!** No need to install Python, ffmpeg, or other dependencies - everything is included in the Docker image.
 
 #### Customizing Download Location
@@ -100,7 +102,7 @@ cd reddit_downloader
 2. Create virtual environment and install dependencies:
 ```bash
 uv venv
-uv sync --dev
+uv sync --extra dev
 ```
 
 3. Create `.env` file with your Reddit API credentials:
@@ -149,7 +151,7 @@ uv run python -m reddit_downloader web
 - Real-time progress tracking
 - Download multiple posts/users concurrently
 - Automatic video/audio merging
-- **Download files directly from web UI** - Files are served through your browser and automatically deleted from the server after download
+- **Download files directly from web UI** - Files are served through your browser and retained until normal cleanup of old jobs/files
 - **Bulk download options** - Download all media as ZIP or TAR.ZST archive
 - **Individual file downloads** - Download specific files one at a time
 
@@ -161,7 +163,7 @@ Once a download job completes, you can download the media files directly through
 2. **Bulk Download (ZIP)**: Click "Download All (ZIP)" to get all files in a standard ZIP archive
 3. **Bulk Download (TAR.ZST)**: Click "Download All (TAR.ZST)" to get all files in a Zstandard-compressed tarball (smaller file size)
 
-**Important**: Files are automatically deleted from the server after you download them. This helps manage disk space and ensures privacy.
+**Important**: Files are retained on the server after browser download and are removed by normal cleanup of old completed jobs/files. Avoid exposing the web interface or download directory to untrusted users.
 
 ### Command Line Interface
 
@@ -370,6 +372,9 @@ reddit_downloader/
 - `REDDIT_CLIENT_ID` - Reddit API client ID (required)
 - `REDDIT_CLIENT_SECRET` - Reddit API client secret (required)
 - `REDDIT_USER_AGENT` - User agent string (optional)
+- `REDDIT_DOWNLOADER_AUTH_TOKEN` - Optional bearer token required for `/api/*` routes. If set, API clients must send `Authorization: Bearer <token>`.
+
+The web interface is intended for trusted/local use. Avoid exposing it directly to the public internet.
 
 ### Command-Line Arguments
 
@@ -416,7 +421,7 @@ After installing ffmpeg, the downloader will automatically merge video and audio
 
 Make sure Flask is installed:
 ```bash
-uv sync --dev
+uv sync --extra dev
 ```
 
 Check if port 5000 is available, or use a different port:

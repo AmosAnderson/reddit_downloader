@@ -21,13 +21,16 @@ def validate_reddit_url(url: str) -> bool:
     parsed = urlparse(url)
     netloc = parsed.netloc.lower()
 
+    if parsed.scheme not in {"http", "https"}:
+        return False
+
     if not netloc:
         return False
 
     if netloc.endswith(".reddit.com") or netloc == "reddit.com":
         return True
 
-    return netloc in {"redd.it", "www.redd.it", "v.redd.it"}
+    return netloc in {"redd.it", "www.redd.it"}
 
 
 def extract_username(url: str) -> str:
@@ -59,11 +62,14 @@ def extract_post_id(url: str) -> str:
     netloc = parsed.netloc.lower()
     path_parts = [part for part in parsed.path.split("/") if part]
 
-    # Handle redd.it and v.redd.it shortlinks
-    if netloc in {"redd.it", "www.redd.it", "v.redd.it"}:
+    # Handle redd.it shortlinks. v.redd.it IDs are media IDs, not submission IDs.
+    if netloc in {"redd.it", "www.redd.it"}:
         if path_parts:
             return path_parts[0].lower()
         raise ValueError(f"Could not extract post ID from URL: {url}")
+
+    if netloc == "v.redd.it":
+        raise ValueError(f"v.redd.it URLs do not contain Reddit post IDs: {url}")
 
     if not (netloc.endswith(".reddit.com") or netloc == "reddit.com"):
         raise ValueError(f"Could not extract post ID from URL: {url}")

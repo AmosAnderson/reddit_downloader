@@ -69,3 +69,4 @@ class DownloadJob:
     error: str | None = None
     results: list[DownloadResult] | None = None
     created_at: datetime = field(default_factory=datetime.now)
+    updated_at: datetime = field(default_factory=datetime.now)

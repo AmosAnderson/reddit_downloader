@@ -66,23 +66,32 @@ class RedditClient:
         # PRAW doesn't require explicit cleanup
         pass
 
-    def is_authenticated(self) -> bool:
-        """Check if client is authenticated and can access Reddit API.
+    def can_access_api(self) -> bool:
+        """Check whether the client can make a lightweight Reddit API request.
 
         Returns:
-            True if authenticated, False otherwise
+            True if Reddit accepts the configured credentials for a read-only request,
+            False otherwise.
         """
         try:
-            # Try to access read-only endpoint
-            _ = self._reddit.read_only
+            hot_posts = self._reddit.subreddit("all").hot(limit=1)
+            next(iter(hot_posts), None)
             return True
         except (
             praw.exceptions.PRAWException,
             prawcore_exceptions.PrawcoreException,
             AttributeError,
         ) as e:
-            logger.debug(f"Authentication check failed: {e}")
+            logger.debug(f"Reddit API access check failed: {e}")
             return False
+
+    def is_authenticated(self) -> bool:
+        """Backward-compatible alias for :meth:`can_access_api`.
+
+        The client operates in read-only mode; this method verifies API access rather
+        than user-account authentication.
+        """
+        return self.can_access_api()
 
     def get_post(self, post_id: str) -> Submission:
         """Fetch a single Reddit post by ID.

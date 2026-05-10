@@ -382,7 +382,7 @@ async function downloadFile(jobId, fileIndex) {
         link.click();
         document.body.removeChild(link);
 
-        showToast('File downloaded! It will be removed from the server.', 'success');
+        showToast('File download started. Server files are retained until cleanup.', 'success');
 
         // Reload files after a short delay
         setTimeout(() => loadJobFiles(jobId), 1000);
@@ -404,7 +404,7 @@ async function downloadArchive(jobId, format) {
         link.click();
         document.body.removeChild(link);
 
-        showToast(`Archive downloaded! All files will be removed from the server.`, 'success');
+        showToast(`Archive download started. Server files are retained until cleanup.`, 'success');
 
         // Reload files after a short delay
         setTimeout(() => loadJobFiles(jobId), 1000);

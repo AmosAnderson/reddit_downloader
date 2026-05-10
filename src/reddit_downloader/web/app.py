@@ -1,6 +1,7 @@
 """Flask web application for reddit_downloader."""
 
 import logging
+import os
 import shutil
 import tarfile
 import tempfile
@@ -8,6 +9,7 @@ import time
 import uuid
 import webbrowser
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from threading import Timer
 from typing import Any, cast
@@ -27,7 +29,9 @@ class RedditDownloaderApp(Flask):
 
     job_manager: JobManager
     reddit_client: RedditClient | None
+    reddit_client_factory: Callable[[], RedditClient] | None
     output_directory: Path | None
+    auth_token: str | None
 
 
 def _get_app() -> RedditDownloaderApp:
@@ -38,6 +42,8 @@ def _get_app() -> RedditDownloaderApp:
 def create_app(
     reddit_client: RedditClient | None = None,
     output_dir: Path | None = None,
+    auth_token: str | None = None,
+    reddit_client_factory: Callable[[], RedditClient] | None = None,
 ) -> RedditDownloaderApp:
     """Create and configure Flask application.
 
@@ -54,13 +60,23 @@ def create_app(
     # Store dependencies in app config
     app.job_manager = JobManager()
     app.reddit_client = reddit_client
+    app.reddit_client_factory = reddit_client_factory
     app.output_directory = output_dir
+    app.auth_token = auth_token or os.getenv("REDDIT_DOWNLOADER_AUTH_TOKEN")
 
     @app.before_request
-    def before_request() -> None:
-        """Set up request context."""
+    def before_request() -> tuple[dict[str, bool | str], int] | None:
+        """Set up request context and enforce optional API authentication."""
         g.request_id = str(uuid.uuid4())
         logger.debug(f"Request {g.request_id}: {request.method} {request.path}")
+
+        token = _get_app().auth_token
+        if token and request.path.startswith("/api/"):
+            expected = f"Bearer {token}"
+            if request.headers.get("Authorization") != expected:
+                return {"success": False, "error": "Unauthorized"}, 401
+
+        return None
 
     @app.route("/")
     def index() -> str:
@@ -109,14 +125,23 @@ def create_app(
         app_context = _get_app()
         job_manager = app_context.job_manager
         reddit_client = app_context.reddit_client
+        reddit_client_factory = app_context.reddit_client_factory
         output_directory = app_context.output_directory
 
-        if reddit_client is None or output_directory is None:
+        if (reddit_client is None and reddit_client_factory is None) or output_directory is None:
             return {"success": False, "error": "Server not properly initialized"}, 500
+
+        job_manager.cleanup_jobs(output_directory)
 
         # Create and start job
         job_id = job_manager.create_job(url, limit)
-        job_manager.start_job(job_id, reddit_client, output_directory, limit)
+        job_manager.start_job(
+            job_id,
+            reddit_client,
+            output_directory,
+            limit,
+            client_factory=reddit_client_factory,
+        )
 
         logger.info(f"Started job {job_id} for URL: {url}")
 
@@ -164,6 +189,8 @@ def create_app(
         """
         job_manager = _get_app().job_manager
 
+        output_directory = _get_app().output_directory
+        job_manager.cleanup_jobs(output_directory)
         jobs = job_manager.list_jobs()
 
         jobs_data = [
@@ -292,24 +319,11 @@ def create_app(
             logger.warning(f"Path validation failed for: {file_path}")
             return {"success": False, "error": "Invalid file path"}, 403
 
-        # Send file and delete after
-        response = send_file(
+        return send_file(
             str(file_path),
             as_attachment=True,
             download_name=file_path.name,
         )
-
-        # Delete file after sending (only if response successful)
-        @response.call_on_close
-        def cleanup() -> None:
-            try:
-                if file_path.exists():
-                    file_path.unlink()
-                    logger.info(f"Deleted downloaded file: {file_path}")
-            except OSError as e:
-                logger.warning(f"Failed to delete file {file_path}: {e}")
-
-        return response
 
     @app.route("/api/download-archive/<job_id>", methods=["GET"])
     def api_download_archive(job_id: str) -> Response | tuple[dict[str, Any], int]:
@@ -417,36 +431,15 @@ def create_app(
                 download_name=download_name,
             )
 
-            # Delete all files after sending
+            # Delete only the temporary archive after sending; downloaded source files
+            # are retained until normal job/file TTL cleanup.
             @response.call_on_close
             def cleanup() -> None:
-                deleted_count = 0
-
-                # Delete temporary archive
                 try:
                     if temp_path.exists():
                         temp_path.unlink()
                 except OSError as e:
                     logger.warning(f"Failed to delete temp archive {temp_path}: {e}")
-
-                # Delete downloaded files only on success
-                if response.status_code != 200:
-                    logger.warning(
-                        "Archive download returned status %s; skipping source cleanup",
-                        response.status_code,
-                    )
-                    return
-
-                # Delete downloaded files
-                for file_path in files:
-                    try:
-                        if file_path.exists():
-                            file_path.unlink()
-                            deleted_count += 1
-                    except OSError as e:
-                        logger.warning(f"Failed to delete file {file_path}: {e}")
-
-                logger.info(f"Deleted {deleted_count}/{len(files)} files from archive download")
 
             return response
 
@@ -499,7 +492,8 @@ def run_web_server(
     output_directory = Path(output_dir)
 
     try:
-        reddit_client = RedditClient(
+        # Validate credentials once at startup while still creating a fresh PRAW client per job.
+        RedditClient(
             client_id=client_id,
             client_secret=client_secret,
             user_agent=user_agent,
@@ -509,8 +503,15 @@ def run_web_server(
         print(f"Error: {e}")
         return 1
 
+    def reddit_client_factory() -> RedditClient:
+        return RedditClient(
+            client_id=client_id,
+            client_secret=client_secret,
+            user_agent=user_agent,
+        )
+
     # Create app with dependencies
-    app = create_app(reddit_client=reddit_client, output_dir=output_directory)
+    app = create_app(reddit_client_factory=reddit_client_factory, output_dir=output_directory)
 
     url = f"http://{host}:{port}"
     print(f"Starting Reddit Downloader web interface at {url}")

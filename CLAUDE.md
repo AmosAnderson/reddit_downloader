@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Setup:**
 ```bash
-uv venv && uv sync --dev
+uv venv && uv sync --extra dev
 cp .env.example .env  # Add REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET
 ```
 
@@ -42,14 +42,14 @@ The package lives under `src/reddit_downloader/` (PEP 517 src layout). Entry poi
 - `types.py` — All shared dataclasses and enums: `URLType`, `MediaType`, `JobStatus`, `MediaInfo`, `DownloadResult`, `DownloadJob`.
 
 **Web layer (`web/`):**
-- `app.py` — Flask app factory (`create_app`). The `RedditDownloaderApp` subclass holds typed attributes (`job_manager`, `reddit_client`, `output_directory`) on the app object rather than in config. Routes are defined inline inside `create_app`. File cleanup (delete-on-download) is wired via Flask's `response.call_on_close`.
+- `app.py` — Flask app factory (`create_app`). The `RedditDownloaderApp` subclass holds typed attributes (`job_manager`, optional `reddit_client`/`reddit_client_factory`, `output_directory`) on the app object rather than in config. Routes are defined inline inside `create_app`. Downloaded source files are retained until old-job cleanup; temporary archives are removed via Flask's `response.call_on_close`.
 - `jobs.py` — `JobManager` runs each download in a daemon `threading.Thread`. Cancellation is signalled via `threading.Event`. Jobs are stored in-memory (no persistence across restarts).
 
 **Data flow for a web download:**
 1. POST `/api/download` → `JobManager.create_job` + `start_job` (spawns thread)
 2. Thread calls `MediaDownloader.download_post_media` which dispatches to `download_image`, `download_video`, or `download_gallery`
 3. GET `/api/status/<job_id>` for polling; GET `/api/files/<job_id>` to list results
-4. GET `/api/download-file/<job_id>/<index>` or `/api/download-archive/<job_id>?format=zip|tar.zst` to retrieve files — both delete files from disk after transfer
+4. GET `/api/download-file/<job_id>/<index>` or `/api/download-archive/<job_id>?format=zip|tar.zst` to retrieve files — source files remain available until old-job cleanup
 
 **Toolchain:** `uv` for package management, `ruff` for lint/format (line length 100), `mypy` in strict mode, `pytest` with `pytest-cov` (coverage runs by default via `addopts`).
 

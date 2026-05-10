@@ -1,7 +1,10 @@
 """Tests for MediaDownloader helpers."""
 
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import requests
 
 from reddit_downloader.downloader import MediaDownloader
 from reddit_downloader.types import MediaType
@@ -140,6 +143,19 @@ class TestGetMediaType:
 
         assert result == MediaType.IMAGE
 
+    def test_image_post_with_query_parameters(self, tmp_path: Path) -> None:
+        """Test identifying image URLs that include query parameters."""
+        downloader = MediaDownloader(tmp_path)
+        mock_post = MagicMock()
+        mock_post.is_self = False
+        mock_post.is_video = False
+        mock_post.is_gallery = False
+        mock_post.url = "https://i.redd.it/image.webp?width=1080&format=pjpg"
+
+        result = downloader._get_media_type(mock_post)
+
+        assert result == MediaType.IMAGE
+
     def test_external_link(self, tmp_path: Path) -> None:
         """Test identifying external link."""
         downloader = MediaDownloader(tmp_path)
@@ -182,10 +198,8 @@ class TestDownloadFile:
     @patch("reddit_downloader.downloader.requests.Session")
     def test_failed_download(self, mock_session_class: MagicMock, tmp_path: Path) -> None:
         """Test failed file download."""
-        from requests import RequestException
-
         mock_session = MagicMock()
-        mock_session.get.side_effect = RequestException("Network error")
+        mock_session.get.side_effect = requests.RequestException("Network error")
         mock_session_class.return_value = mock_session
 
         downloader = MediaDownloader(tmp_path)
@@ -195,6 +209,52 @@ class TestDownloadFile:
 
         assert result is False
         assert not filepath.exists()
+        assert downloader._last_download_error == "Network error: Network error"
+
+    @patch("reddit_downloader.downloader.requests.Session")
+    def test_http_error_preserves_status(
+        self, mock_session_class: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test HTTP failures preserve status details."""
+        mock_session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_response.reason = "Not Found"
+        mock_response.raise_for_status.side_effect = requests.HTTPError("404")
+        mock_session.get.return_value.__enter__.return_value = mock_response
+        mock_session_class.return_value = mock_session
+        downloader = MediaDownloader(tmp_path)
+
+        result = downloader._download_file("https://example.com/missing.jpg", tmp_path / "x.jpg")
+
+        assert result is False
+        assert downloader._last_download_error == "HTTP 404: Not Found"
+
+    @patch("reddit_downloader.downloader.requests.Session")
+    def test_cancelled_download_removes_partial_file(
+        self, mock_session_class: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test cancellation during chunked download removes partial files."""
+        cancel_event = threading.Event()
+        mock_session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.headers.get.return_value = None
+
+        def chunks(*args: object, **kwargs: object) -> list[bytes]:
+            cancel_event.set()
+            return [b"partial data"]
+
+        mock_response.iter_content.side_effect = chunks
+        mock_session.get.return_value.__enter__.return_value = mock_response
+        mock_session_class.return_value = mock_session
+        downloader = MediaDownloader(tmp_path, cancel_event=cancel_event)
+        filepath = tmp_path / "cancelled.jpg"
+
+        result = downloader._download_file("https://example.com/test.jpg", filepath)
+
+        assert result is False
+        assert not filepath.exists()
+        assert downloader._last_download_error == "Download cancelled"
 
 
 class TestDownloadImage:
@@ -301,6 +361,35 @@ class TestDownloadVideo:
         assert result is not None
         assert result.name == "test.mp4"
 
+    @patch.object(MediaDownloader, "_download_file")
+    @patch.object(MediaDownloader, "_merge_video_audio")
+    def test_download_video_uses_unique_temp_files(
+        self, mock_merge: MagicMock, mock_download: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test video downloads use unique tempfile names instead of predictable paths."""
+        downloader = MediaDownloader(tmp_path)
+        mock_post = MagicMock()
+        mock_post.media = {
+            "reddit_video": {"fallback_url": "https://v.redd.it/abc123/DASH_720.mp4"}
+        }
+        video_temp_paths: list[Path] = []
+
+        def download_side_effect(url: str, path: Path) -> bool:
+            if "DASH_720.mp4" in url:
+                video_temp_paths.append(path)
+                path.write_text("video data")
+                return True
+            return False
+
+        mock_download.side_effect = download_side_effect
+
+        assert downloader.download_video(mock_post, "test") is not None
+        assert downloader.download_video(mock_post, "test") is not None
+
+        assert len(video_temp_paths) == 2
+        assert video_temp_paths[0] != video_temp_paths[1]
+        assert all(path.name.startswith("video_") for path in video_temp_paths)
+
 
 class TestDownloadGallery:
     """Test download_gallery method."""
@@ -330,6 +419,42 @@ class TestDownloadGallery:
 
         assert len(result) == 2
         assert mock_download_image.call_count == 2
+
+    @patch.object(MediaDownloader, "download_image")
+    def test_download_gallery_uses_gallery_data_order(
+        self, mock_download_image: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test gallery downloads follow gallery_data order."""
+        downloader = MediaDownloader(tmp_path)
+        mock_post = MagicMock()
+        mock_post.gallery_data = {
+            "items": [{"media_id": "second"}, {"media_id": "first"}],
+        }
+        mock_post.media_metadata = {
+            "first": {
+                "status": "valid",
+                "s": {"u": "https://example.com/first.jpg?x=1&amp;y=2"},
+                "m": "image/jpeg",
+            },
+            "second": {
+                "status": "valid",
+                "s": {"u": "https://example.com/second.png"},
+                "m": "image/png",
+            },
+        }
+        mock_download_image.side_effect = [tmp_path / "second.png", tmp_path / "first.jpg"]
+
+        result = downloader.download_gallery(mock_post, "test")
+
+        assert result == [tmp_path / "second.png", tmp_path / "first.jpg"]
+        assert mock_download_image.call_args_list[0].args == (
+            "https://example.com/second.png",
+            "test_1.png",
+        )
+        assert mock_download_image.call_args_list[1].args == (
+            "https://example.com/first.jpg?x=1&y=2",
+            "test_2.jpg",
+        )
 
     def test_download_gallery_no_metadata(self, tmp_path: Path) -> None:
         """Test gallery download with no metadata."""
@@ -401,6 +526,30 @@ class TestDownloadPostMedia:
 
         assert len(result) == 1
         assert result[0].success is True
+
+    @patch.object(MediaDownloader, "_get_media_type")
+    @patch.object(MediaDownloader, "download_image")
+    def test_download_post_external_webp_with_query(
+        self, mock_download_image: MagicMock, mock_get_media_type: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test external direct WebP URLs with query strings are supported."""
+        downloader = MediaDownloader(tmp_path)
+        mock_get_media_type.return_value = MediaType.EXTERNAL
+        mock_post = MagicMock()
+        mock_post.url = "https://external.example/image.webp?download=1"
+        mock_post.author.name = "testuser"
+        mock_post.id = "abc123"
+        mock_post.title = "Test WebP"
+        mock_download_image.return_value = tmp_path / "testuser_abc123.webp"
+
+        result = downloader.download_post_media(mock_post)
+
+        assert len(result) == 1
+        assert result[0].success is True
+        mock_download_image.assert_called_once_with(
+            "https://external.example/image.webp?download=1",
+            "testuser_abc123.webp",
+        )
 
     @patch.object(MediaDownloader, "download_gallery")
     def test_download_post_gallery(

@@ -4,6 +4,8 @@ import logging
 import re
 import subprocess
 import tempfile
+import threading
+from html import unescape
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -13,6 +15,7 @@ from praw.models import Submission
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from reddit_downloader.security import validate_public_download_url
 from reddit_downloader.types import DownloadResult, MediaInfo, MediaType
 
 logger = logging.getLogger(__name__)
@@ -23,9 +26,15 @@ class MediaDownloader:
 
     # Maximum file size (100MB)
     MAX_FILE_SIZE = 100 * 1024 * 1024
+    IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
 
     def __init__(
-        self, output_dir: Path | str, *, verbose: bool = False, timeout: int = 300
+        self,
+        output_dir: Path | str,
+        *,
+        verbose: bool = False,
+        timeout: int = 300,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         """Initialize media downloader.
 
@@ -38,6 +47,8 @@ class MediaDownloader:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._verbose = verbose
         self.timeout = timeout
+        self.cancel_event = cancel_event
+        self._last_download_error: str | None = None
 
         # Configure session with retries
         self.session = requests.Session()
@@ -56,6 +67,16 @@ class MediaDownloader:
 
         if self._verbose:
             logger.debug(message)
+
+    def _is_cancelled(self) -> bool:
+        """Return whether this downloader has been asked to cancel work."""
+
+        return self.cancel_event is not None and self.cancel_event.is_set()
+
+    def _set_download_error(self, message: str) -> None:
+        """Remember the most recent download error for higher-level results."""
+
+        self._last_download_error = message
 
     def _sanitize_filename(self, filename: str) -> str:
         """Sanitize filename for filesystem compatibility.
@@ -157,9 +178,10 @@ class MediaDownloader:
         if hasattr(post, "is_video") and post.is_video:
             return MediaType.VIDEO
 
-        # Check URL for image extensions
+        # Check URL path for image extensions, ignoring query parameters/fragments.
         url = post.url.lower()
-        if any(url.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".gif", ".webp")):
+        url_path = urlparse(post.url).path.lower()
+        if any(url_path.endswith(ext) for ext in self.IMAGE_EXTENSIONS):
             return MediaType.IMAGE
 
         # Check for common image/video hosting domains
@@ -186,17 +208,35 @@ class MediaDownloader:
             True if successful, False otherwise
         """
         temp_path: Path | None = None
+        self._last_download_error = None
+
+        if self._is_cancelled():
+            self._set_download_error("Download cancelled")
+            return False
+
+        try:
+            validate_public_download_url(url)
+        except ValueError as e:
+            self._set_download_error(str(e))
+            logger.warning("Blocked unsafe download URL %s: %s", url, e)
+            return False
 
         try:
             with self.session.get(url, timeout=self.timeout, stream=True) as response:
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except requests.HTTPError as e:
+                    status = response.status_code
+                    reason = response.reason or "HTTP error"
+                    self._set_download_error(f"HTTP {status}: {reason}")
+                    raise e
 
                 # Check content length
                 content_length = response.headers.get("content-length")
                 if content_length and int(content_length) > self.MAX_FILE_SIZE:
-                    logger.warning(
-                        f"File too large: {content_length} bytes (max: {self.MAX_FILE_SIZE})"
-                    )
+                    error = f"File too large: {content_length} bytes (max: {self.MAX_FILE_SIZE})"
+                    logger.warning(error)
+                    self._set_download_error(error)
                     return False
 
                 filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -211,12 +251,16 @@ class MediaDownloader:
                     downloaded = 0
                     size_exceeded = False
                     for chunk in response.iter_content(chunk_size=8192):
+                        if self._is_cancelled():
+                            self._set_download_error("Download cancelled")
+                            size_exceeded = True
+                            break
                         if chunk:
                             downloaded += len(chunk)
                             if downloaded > self.MAX_FILE_SIZE:
-                                logger.warning(
-                                    f"File exceeded size limit: {downloaded} bytes"
-                                )
+                                error = f"File exceeded size limit: {downloaded} bytes"
+                                logger.warning(error)
+                                self._set_download_error(error)
                                 size_exceeded = True
                                 break
                             tmp_file.write(chunk)
@@ -231,11 +275,28 @@ class MediaDownloader:
                             )
                     return False
 
+            if self._is_cancelled():
+                self._set_download_error("Download cancelled")
+                if temp_path is not None and temp_path.exists():
+                    temp_path.unlink()
+                return False
+
             if temp_path is not None:
                 temp_path.replace(filepath)
 
             return True
+        except requests.Timeout as e:
+            self._set_download_error(f"Download timed out after {self.timeout} seconds")
+            logger.error(f"Download timed out for {url}: {e}")
+            if temp_path is not None and temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError as cleanup_err:
+                    logger.warning("Failed to delete temp file %s: %s", temp_path, cleanup_err)
+            return False
         except requests.RequestException as e:
+            if self._last_download_error is None:
+                self._set_download_error(f"Network error: {e}")
             logger.error(f"Download failed for {url}: {e}")
             if temp_path is not None and temp_path.exists():
                 try:
@@ -244,6 +305,7 @@ class MediaDownloader:
                     logger.warning("Failed to delete temp file %s: %s", temp_path, cleanup_err)
             return False
         except OSError as e:
+            self._set_download_error(f"File system error: {e}")
             logger.error(f"File system error: {e}")
             if temp_path is not None and temp_path.exists():
                 try:
@@ -352,11 +414,29 @@ class MediaDownloader:
         self._log_debug(f"Video URL: {video_url}")
         self._log_debug(f"Trying {len(unique_audio_urls)} candidate audio URL(s)")
 
-        # Download video stream
-        video_temp = self.output_dir / f"temp_video_{safe_filename}"
-        audio_temp = self.output_dir / f"temp_audio_{safe_filename}"
+        # Download video stream to unique temporary files to avoid concurrent job collisions.
+        video_tmp_file = tempfile.NamedTemporaryFile(
+            delete=False,
+            dir=str(self.output_dir),
+            prefix="video_",
+            suffix=f"_{safe_filename}",
+        )
+        audio_tmp_file = tempfile.NamedTemporaryFile(
+            delete=False,
+            dir=str(self.output_dir),
+            prefix="audio_",
+            suffix=f"_{safe_filename}",
+        )
+        video_temp = Path(video_tmp_file.name)
+        audio_temp = Path(audio_tmp_file.name)
+        video_tmp_file.close()
+        audio_tmp_file.close()
 
         try:
+            if self._is_cancelled():
+                self._set_download_error("Download cancelled")
+                return None
+
             # Download video
             if not self._download_file(video_url, video_temp):
                 return None
@@ -380,6 +460,10 @@ class MediaDownloader:
                     else:
                         self._log_debug("Audio download failed, trying next URL")
 
+            if self._is_cancelled():
+                self._set_download_error("Download cancelled")
+                return None
+
             if has_audio:
                 # Try to merge video and audio using ffmpeg
                 merge_success = self._merge_video_audio(video_temp, audio_temp, filepath)
@@ -393,6 +477,8 @@ class MediaDownloader:
                         "ffmpeg merge failed for %s, saving video without audio",
                         filename,
                     )
+                    if self._last_download_error is None:
+                        self._set_download_error("ffmpeg merge failed; saved video without audio")
                     video_temp.rename(filepath)
                     return filepath
             else:
@@ -409,6 +495,7 @@ class MediaDownloader:
                 return filepath
 
         except (requests.RequestException, OSError) as e:
+            self._set_download_error(f"Error downloading video: {e}")
             logger.error("Error downloading video %s: %s", filename, e)
             return None
         finally:
@@ -432,6 +519,10 @@ class MediaDownloader:
         Returns:
             True if merge successful, False otherwise
         """
+        if self._is_cancelled():
+            self._set_download_error("Download cancelled")
+            return False
+
         try:
             # Use ffmpeg to merge streams
             # -i video -i audio -c:v copy -c:a aac
@@ -455,9 +546,11 @@ class MediaDownloader:
             )
             return True
         except FileNotFoundError:
+            self._set_download_error("ffmpeg not found; saved video without audio")
             logger.warning("ffmpeg not found. Install ffmpeg to download videos with audio.")
             return False
         except subprocess.CalledProcessError as e:
+            self._set_download_error(f"ffmpeg merge failed: {e.stderr}")
             logger.warning("ffmpeg merge failed: %s", e.stderr)
             return False
 
@@ -477,8 +570,21 @@ class MediaDownloader:
             return downloaded
 
         media_metadata: dict[str, Any] = post.media_metadata
+        gallery_items: list[tuple[str, Any]] = []
+        gallery_data = getattr(post, "gallery_data", None)
 
-        for index, (media_id, media_item) in enumerate(media_metadata.items(), start=1):
+        if isinstance(gallery_data, dict) and isinstance(gallery_data.get("items"), list):
+            for item in gallery_data["items"]:
+                if not isinstance(item, dict):
+                    continue
+                media_id = item.get("media_id")
+                if isinstance(media_id, str) and media_id in media_metadata:
+                    gallery_items.append((media_id, media_metadata[media_id]))
+
+        if not gallery_items:
+            gallery_items = list(media_metadata.items())
+
+        for index, (media_id, media_item) in enumerate(gallery_items, start=1):
             logger.debug(f"Processing gallery item {media_id}")
             if media_item.get("status") != "valid":
                 logger.debug(
@@ -499,7 +605,7 @@ class MediaDownloader:
                 continue
 
             # Decode HTML entities in URL
-            image_url = image_url.replace("&amp;", "&")
+            image_url = unescape(image_url)
 
             # Determine extension from mime type
             mime_type = media_item.get("m", "image/jpeg")
@@ -543,7 +649,13 @@ class MediaDownloader:
 
             media_info = self._create_media_info(post, MediaType.IMAGE, filename)
             filepath = self.download_image(url, filename)
-            results.append(self._create_download_result(filepath, media_info))
+            results.append(
+                self._create_download_result(
+                    filepath,
+                    media_info,
+                    self._last_download_error or "Image download failed",
+                )
+            )
 
         elif media_type == MediaType.VIDEO:
             # Download video
@@ -551,7 +663,11 @@ class MediaDownloader:
             media_info = self._create_media_info(post, MediaType.VIDEO, filename)
             filepath = self.download_video(post, base_filename)
             results.append(
-                self._create_download_result(filepath, media_info, "Video download failed")
+                self._create_download_result(
+                    filepath,
+                    media_info,
+                    self._last_download_error or "Video download failed",
+                )
             )
 
         elif media_type == MediaType.GALLERY:
@@ -574,13 +690,20 @@ class MediaDownloader:
         elif media_type == MediaType.EXTERNAL:
             # For external links, we'll try to download if it looks like a direct image link
             url = post.url
-            if any(url.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".gif")):
+            url_path = urlparse(url).path.lower()
+            if any(url_path.endswith(ext) for ext in self.IMAGE_EXTENSIONS):
                 ext = self._extract_url_extension(url)
                 filename = f"{base_filename}.{ext}"
 
                 media_info = self._create_media_info(post, MediaType.EXTERNAL, filename)
                 filepath = self.download_image(url, filename)
-                results.append(self._create_download_result(filepath, media_info))
+                results.append(
+                    self._create_download_result(
+                        filepath,
+                        media_info,
+                        self._last_download_error or "External image download failed",
+                    )
+                )
             else:
                 # External link that we can't handle
                 logger.debug("Skipping unsupported external link for post %s: %s", post.id, url)

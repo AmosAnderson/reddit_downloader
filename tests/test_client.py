@@ -80,32 +80,35 @@ class TestRedditClientMethods:
             assert isinstance(client, RedditClient)
 
     @patch("reddit_downloader.client.praw.Reddit")
-    def test_is_authenticated_success(self, mock_reddit: MagicMock) -> None:
-        """Test successful authentication check."""
+    def test_can_access_api_success(self, mock_reddit: MagicMock) -> None:
+        """Test successful Reddit API access check."""
         mock_reddit_instance = MagicMock()
-        mock_reddit_instance.read_only = True
+        mock_subreddit = MagicMock()
+        mock_subreddit.hot.return_value = iter([MagicMock()])
+        mock_reddit_instance.subreddit.return_value = mock_subreddit
         mock_reddit.return_value = mock_reddit_instance
 
         client = RedditClient(
             client_id="test_id", client_secret="test_secret", user_agent="test_agent"
         )
 
+        assert client.can_access_api() is True
         assert client.is_authenticated() is True
+        mock_reddit_instance.subreddit.assert_called_with("all")
+        mock_subreddit.hot.assert_called_with(limit=1)
 
     @patch("reddit_downloader.client.praw.Reddit")
-    def test_is_authenticated_failure(self, mock_reddit: MagicMock) -> None:
-        """Test failed authentication check."""
+    def test_can_access_api_failure(self, mock_reddit: MagicMock) -> None:
+        """Test failed Reddit API access check."""
         mock_reddit_instance = MagicMock()
-        # Configure the mock to raise an exception when accessing read_only
-        type(mock_reddit_instance).read_only = property(
-            lambda self: (_ for _ in ()).throw(praw.exceptions.PRAWException("Auth failed"))
-        )
+        mock_reddit_instance.subreddit.side_effect = praw.exceptions.PRAWException("Auth failed")
         mock_reddit.return_value = mock_reddit_instance
 
         client = RedditClient(
             client_id="test_id", client_secret="test_secret", user_agent="test_agent"
         )
 
+        assert client.can_access_api() is False
         assert client.is_authenticated() is False
 
     @patch("reddit_downloader.client.praw.Reddit")

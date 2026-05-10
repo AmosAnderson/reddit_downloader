@@ -53,7 +53,7 @@ class TestWebAppRoutes:
         assert response.status_code == 200
 
     def test_api_download_success(
-        self, client: FlaskClient, mock_job_manager: MagicMock
+        self, client: FlaskClient, mock_job_manager: MagicMock, tmp_path: Path
     ) -> None:
         """Test successful download API call."""
         mock_job_manager.create_job.return_value = "test-job-id"
@@ -68,6 +68,7 @@ class TestWebAppRoutes:
         assert data["success"] is True
         assert data["job_id"] == "test-job-id"
         mock_job_manager.create_job.assert_called_once()
+        mock_job_manager.cleanup_jobs.assert_called_once_with(tmp_path)
         mock_job_manager.start_job.assert_called_once()
 
     def test_api_download_missing_url(self, client: FlaskClient) -> None:
@@ -215,6 +216,26 @@ class TestWebAppRoutes:
         data = response.get_json()
         assert data["success"] is False
 
+    def test_create_app_uses_reddit_client_factory(
+        self, mock_job_manager: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test API downloads can be started with a client factory instead of shared client."""
+        client_factory = MagicMock()
+        test_app = app.create_app(output_dir=tmp_path, reddit_client_factory=client_factory)
+        test_app.job_manager = mock_job_manager
+        test_app.config["TESTING"] = True
+        mock_job_manager.create_job.return_value = "job-id"
+
+        with test_app.test_client() as test_client:
+            response = test_client.post(
+                "/api/download",
+                json={"url": "https://reddit.com/r/test/comments/abc123/test/", "limit": None},
+            )
+
+        assert response.status_code == 200
+        mock_job_manager.start_job.assert_called_once()
+        assert mock_job_manager.start_job.call_args.kwargs["client_factory"] is client_factory
+
     def test_api_config(self, client: FlaskClient) -> None:
         """Test config API."""
         response = client.get("/api/config")
@@ -258,6 +279,25 @@ class TestWebAppRoutes:
         assert len(data["files"]) == 1
         assert data["files"][0]["filename"] == "test.jpg"
 
+    def test_download_file_retains_source_file(
+        self, client: FlaskClient, mock_job_manager: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test single-file downloads do not immediately delete source files."""
+        test_file = tmp_path / "test.jpg"
+        test_file.write_text("test content")
+        mock_job_manager.get_job.return_value = DownloadJob(
+            job_id="test-job-id",
+            url="https://reddit.com/r/test/comments/abc123/test/",
+            status=JobStatus.COMPLETED,
+            results=[DownloadResult(success=True, file_path=test_file)],
+        )
+
+        response = client.get("/api/download-file/test-job-id/0")
+        response.close()
+
+        assert response.status_code == 200
+        assert test_file.exists()
+
     def test_api_files_empty_results(
         self, client: FlaskClient, mock_job_manager: MagicMock
     ) -> None:
@@ -281,6 +321,67 @@ class TestWebAppRoutes:
         data = response.get_json()
         assert data["success"] is True
         assert data["files"] == []
+
+
+class TestWebAppAuth:
+    """Test optional API authentication."""
+
+    def test_api_requires_token_when_configured(
+        self, mock_reddit_client: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test API routes reject requests without the configured bearer token."""
+        test_app = app.create_app(
+            reddit_client=mock_reddit_client,
+            output_dir=tmp_path,
+            auth_token="secret-token",
+        )
+        test_app.config["TESTING"] = True
+
+        with test_app.test_client() as test_client:
+            response = test_client.get("/api/config")
+
+        assert response.status_code == 401
+        data = response.get_json()
+        assert data is not None
+        assert data["success"] is False
+
+    def test_api_accepts_valid_token(
+        self, mock_reddit_client: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test API routes accept requests with the configured bearer token."""
+        test_app = app.create_app(
+            reddit_client=mock_reddit_client,
+            output_dir=tmp_path,
+            auth_token="secret-token",
+        )
+        test_app.config["TESTING"] = True
+
+        with test_app.test_client() as test_client:
+            response = test_client.get(
+                "/api/config",
+                headers={"Authorization": "Bearer secret-token"},
+            )
+
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data is not None
+        assert data["success"] is True
+
+    def test_index_is_public_when_token_configured(
+        self, mock_reddit_client: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test non-API routes remain public with API auth enabled."""
+        test_app = app.create_app(
+            reddit_client=mock_reddit_client,
+            output_dir=tmp_path,
+            auth_token="secret-token",
+        )
+        test_app.config["TESTING"] = True
+
+        with test_app.test_client() as test_client:
+            response = test_client.get("/")
+
+        assert response.status_code == 200
 
 
 class TestOpenBrowser:

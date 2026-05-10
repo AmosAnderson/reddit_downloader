@@ -22,7 +22,6 @@ class TestValidateRedditUrl:
             "https://old.reddit.com/r/test",
             "https://new.reddit.com/u/testuser",
             "https://redd.it/abc123",
-            "https://v.redd.it/abc123",
         ]
 
         for url in valid_urls:
@@ -35,6 +34,8 @@ class TestValidateRedditUrl:
             "https://twitter.com/user",
             "not a url",
             "",
+            "ftp://reddit.com/r/test/comments/abc123/title",
+            "https://v.redd.it/abc123",
         ]
 
         for url in invalid_urls:
@@ -83,6 +84,11 @@ class TestExtractPostId:
         url = "https://redd.it/jkl012"
         assert extract_post_id(url) == "jkl012"
 
+    def test_v_redd_it_raises_error(self) -> None:
+        """Test that v.redd.it media IDs are not treated as post IDs."""
+        with pytest.raises(ValueError):
+            extract_post_id("https://v.redd.it/media123")
+
     def test_invalid_url_raises_error(self) -> None:
         """Test that invalid URL raises ValueError."""
         with pytest.raises(ValueError):
@@ -123,6 +129,14 @@ class TestParseUrl:
         """Test parsing an invalid URL."""
         url = "https://google.com"
         result = parse_url(url)
+
+        assert result["url_type"] == URLType.INVALID
+        assert result["username"] is None
+        assert result["post_id"] is None
+
+    def test_parse_v_redd_it_url_as_invalid(self) -> None:
+        """Test v.redd.it media URLs are not parsed as post URLs."""
+        result = parse_url("https://v.redd.it/media123")
 
         assert result["url_type"] == URLType.INVALID
         assert result["username"] is None
