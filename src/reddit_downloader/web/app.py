@@ -279,7 +279,7 @@ def create_app(
 
     @app.route("/api/download-file/<job_id>/<int:file_index>", methods=["GET"])
     def api_download_file(job_id: str, file_index: int) -> Response | tuple[dict[str, Any], int]:
-        """Download a single file and delete it after sending.
+        """Download a single file for a completed job.
 
         Args:
             job_id: Job ID
@@ -327,7 +327,7 @@ def create_app(
 
     @app.route("/api/download-archive/<job_id>", methods=["GET"])
     def api_download_archive(job_id: str) -> Response | tuple[dict[str, Any], int]:
-        """Download all files as an archive and delete them after sending.
+        """Download all successful job files as a temporary archive.
 
         Args:
             job_id: Job ID

@@ -42,6 +42,7 @@ class MediaDownloader:
             output_dir: Directory where media files will be saved
             verbose: Emit debug logging when True
             timeout: Request timeout in seconds (default: 300)
+            cancel_event: Optional event used to cancel active downloads
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)

@@ -33,8 +33,8 @@ services:
       - REDDIT_DOWNLOADER_AUTH_TOKEN=${REDDIT_DOWNLOADER_AUTH_TOKEN:-}
     env_file:
       - .env
-    # Override command for CLI usage
-    # Example: docker-compose run reddit-downloader-cli post <url>
+    # Override command for CLI usage.
+    # Example: docker compose run --rm reddit-downloader-cli post <url>
     entrypoint: ["/app/.venv/bin/python", "-m", "reddit_downloader"]
     command: ["--help"]
     profiles:
