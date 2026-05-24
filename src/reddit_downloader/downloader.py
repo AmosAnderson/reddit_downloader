@@ -480,7 +480,7 @@ class MediaDownloader:
                     )
                     if self._last_download_error is None:
                         self._set_download_error("ffmpeg merge failed; saved video without audio")
-                    video_temp.rename(filepath)
+                    video_temp.replace(filepath)
                     return filepath
             else:
                 # No audio stream available
@@ -492,7 +492,7 @@ class MediaDownloader:
                     )
                 else:
                     logger.debug("No audio stream found for %s", filename)
-                video_temp.rename(filepath)
+                video_temp.replace(filepath)
                 return filepath
 
         except (requests.RequestException, OSError) as e:

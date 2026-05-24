@@ -3,7 +3,7 @@
 This package provides three interfaces:
 1. Library API - Programmatic access
 2. CLI Tool - Command-line interface
-3. Web Interface - Local web server with drag-and-drop support
+3. TUI / Web - Terminal GUI and browser-hosted terminal app
 """
 
 __version__ = "0.1.0"

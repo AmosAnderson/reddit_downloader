@@ -1,11 +1,11 @@
-"""Tests for job manager."""
+"""Tests for core job manager."""
 
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from reddit_downloader.types import JobStatus, URLType
-from reddit_downloader.web.jobs import JobManager
+from reddit_downloader.jobs import JobManager
 
 
 class TestJobManager:
@@ -135,8 +135,8 @@ class TestJobManager:
 
         assert jobs == []
 
-    @patch("reddit_downloader.web.jobs.parse_url")
-    @patch("reddit_downloader.web.jobs.MediaDownloader")
+    @patch("reddit_downloader.jobs.parse_url")
+    @patch("reddit_downloader.jobs.MediaDownloader")
     def test_run_job_invalid_url(self, mock_downloader: MagicMock, mock_parse: MagicMock) -> None:
         """Test running job with invalid URL."""
         manager = JobManager()
@@ -150,8 +150,8 @@ class TestJobManager:
         assert job.status == JobStatus.FAILED
         assert job.error == "Invalid Reddit URL"
 
-    @patch("reddit_downloader.web.jobs.parse_url")
-    @patch("reddit_downloader.web.jobs.MediaDownloader")
+    @patch("reddit_downloader.jobs.parse_url")
+    @patch("reddit_downloader.jobs.MediaDownloader")
     def test_run_job_single_post(
         self, mock_downloader_class: MagicMock, mock_parse: MagicMock
     ) -> None:
@@ -181,8 +181,8 @@ class TestJobManager:
         assert "cancel_event" in mock_downloader_class.call_args.kwargs
         mock_downloader.download_post_media.assert_called_once_with(mock_post)
 
-    @patch("reddit_downloader.web.jobs.parse_url")
-    @patch("reddit_downloader.web.jobs.MediaDownloader")
+    @patch("reddit_downloader.jobs.parse_url")
+    @patch("reddit_downloader.jobs.MediaDownloader")
     def test_run_job_user_posts(
         self, mock_downloader_class: MagicMock, mock_parse: MagicMock
     ) -> None:
@@ -213,8 +213,8 @@ class TestJobManager:
         assert job.total_items == 2
         mock_client.get_user_posts.assert_called_once_with("testuser", limit=2)
 
-    @patch("reddit_downloader.web.jobs.parse_url")
-    @patch("reddit_downloader.web.jobs.MediaDownloader")
+    @patch("reddit_downloader.jobs.parse_url")
+    @patch("reddit_downloader.jobs.MediaDownloader")
     def test_run_job_cancelled_during_single_post(
         self, mock_downloader_class: MagicMock, mock_parse: MagicMock
     ) -> None:
@@ -241,7 +241,7 @@ class TestJobManager:
         assert job.status == JobStatus.CANCELLED
         assert job.results is not None
 
-    @patch("reddit_downloader.web.jobs.parse_url")
+    @patch("reddit_downloader.jobs.parse_url")
     def test_run_job_exception(self, mock_parse: MagicMock) -> None:
         """Test running job with exception."""
         manager = JobManager()
@@ -256,8 +256,8 @@ class TestJobManager:
         assert job.status == JobStatus.FAILED
         assert "Test error" in str(job.error)
 
-    @patch("reddit_downloader.web.jobs.parse_url")
-    @patch("reddit_downloader.web.jobs.MediaDownloader")
+    @patch("reddit_downloader.jobs.parse_url")
+    @patch("reddit_downloader.jobs.MediaDownloader")
     def test_run_job_uses_client_factory(
         self, mock_downloader_class: MagicMock, mock_parse: MagicMock
     ) -> None:
@@ -278,7 +278,7 @@ class TestJobManager:
         factory.assert_called_once_with()
         mock_client.get_post.assert_called_once_with("abc123")
 
-    @patch("reddit_downloader.web.jobs.threading.Thread")
+    @patch("reddit_downloader.jobs.threading.Thread")
     def test_start_job(self, mock_thread: MagicMock) -> None:
         """Test starting job in background thread."""
         manager = JobManager()

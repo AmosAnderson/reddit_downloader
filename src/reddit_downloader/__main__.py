@@ -204,13 +204,13 @@ def main() -> int:
     user_parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
     # Web command
-    web_parser = subparsers.add_parser("web", help="Start web interface")
+    web_parser = subparsers.add_parser("web", help="Start web interface (TUI served in browser)")
     web_parser.add_argument(
         "-p",
         "--port",
         type=int,
-        default=5000,
-        help="Port for web server (default: 5000)",
+        default=8000,
+        help="Port for web server (default: 8000)",
     )
     web_parser.add_argument(
         "--host",
@@ -236,39 +236,86 @@ def main() -> int:
         "--user-agent",
         help="Reddit API user agent (or set REDDIT_USER_AGENT env var)",
     )
-    web_parser.add_argument(
-        "--no-open-browser",
-        action="store_true",
-        help="Do not automatically open a browser when the web server starts",
+
+    # TUI command
+    tui_parser = subparsers.add_parser("tui", help="Start terminal user interface (default)")
+    tui_parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=Path("downloads"),
+        help="Output directory (default: downloads)",
+    )
+    tui_parser.add_argument(
+        "--client-id",
+        help="Reddit API client ID (or set REDDIT_CLIENT_ID env var)",
+    )
+    tui_parser.add_argument(
+        "--client-secret",
+        help="Reddit API client secret (or set REDDIT_CLIENT_SECRET env var)",
+    )
+    tui_parser.add_argument(
+        "--user-agent",
+        help="Reddit API user agent (or set REDDIT_USER_AGENT env var)",
     )
 
     args = parser.parse_args()
 
     if not args.command:
-        parser.print_help()
-        return 1
+        args.command = "tui"
+        args.output = Path("downloads")
+        args.client_id = None
+        args.client_secret = None
+        args.user_agent = None
 
     if getattr(args, "verbose", False):
         logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(name)s:%(message)s")
     else:
         logging.basicConfig(level=logging.WARNING, format="%(levelname)s:%(name)s:%(message)s")
 
-    # Handle web command separately (will import web module only when needed)
-    if args.command == "web":
+    # Handle TUI command
+    if args.command == "tui":
         try:
-            from reddit_downloader.web.app import run_web_server
+            from reddit_downloader.tui import run_tui
 
-            return run_web_server(
-                host=args.host,
-                port=args.port,
+            return run_tui(
                 output_dir=args.output,
                 client_id=args.client_id,
                 client_secret=args.client_secret,
                 user_agent=args.user_agent,
-                open_browser_on_start=not args.no_open_browser,
             )
         except ImportError as e:
-            print(f"Error: Web interface not available: {e}", file=sys.stderr)
+            print(f"Error: TUI interface not available: {e}", file=sys.stderr)
+            return 1
+
+    # Handle web command separately (will serve TUI via textual-serve)
+    if args.command == "web":
+        try:
+            from textual_serve.server import Server
+
+            cmd_parts = [sys.executable, "-m", "reddit_downloader", "tui"]
+            if args.output:
+                cmd_parts.extend(["-o", str(args.output)])
+            if args.client_id:
+                cmd_parts.extend(["--client-id", args.client_id])
+            if args.client_secret:
+                cmd_parts.extend(["--client-secret", args.client_secret])
+            if args.user_agent:
+                cmd_parts.extend(["--user-agent", args.user_agent])
+            cmd = " ".join(f'"{p}"' if " " in str(p) else str(p) for p in cmd_parts)
+
+            server = Server(
+                command=cmd,
+                host=args.host,
+                port=args.port,
+                title="Reddit Downloader",
+            )
+            print(f"Starting Reddit Downloader web interface at http://{args.host}:{args.port}")
+            print("Press Ctrl+C to stop the server")
+            server.serve()
+            return 0
+        except Exception as e:
+            print(f"Error starting web server: {e}", file=sys.stderr)
             return 1
 
     if args.command == "user" and args.limit is not None:

@@ -70,13 +70,16 @@ class TestCliMain:
         assert result == 0
         assert mock_basic_config.call_args.kwargs["level"] == logging.DEBUG
 
-    @patch("reddit_downloader.web.app.run_web_server")
-    def test_web_no_open_browser_flag(self, mock_run_web_server: MagicMock) -> None:
-        """Test --no-open-browser is passed to the web server."""
-        mock_run_web_server.return_value = 0
+    @patch("textual_serve.server.Server")
+    def test_web_starts_textual_serve(self, mock_server_class: MagicMock) -> None:
+        """Test web subcommand starts textual-serve Server."""
+        mock_server = MagicMock()
+        mock_server_class.return_value = mock_server
 
-        with patch.object(sys, "argv", ["reddit_downloader", "web", "--no-open-browser"]):
+        with patch.object(sys, "argv", ["reddit_downloader", "web", "--port", "9000"]):
             result = main()
 
         assert result == 0
-        assert mock_run_web_server.call_args.kwargs["open_browser_on_start"] is False
+        mock_server_class.assert_called_once()
+        assert mock_server_class.call_args.kwargs["port"] == 9000
+        mock_server.serve.assert_called_once()
