@@ -8,7 +8,7 @@ import threading
 from html import unescape
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 from praw.models import Submission
@@ -216,14 +216,39 @@ class MediaDownloader:
             return False
 
         try:
-            validate_public_download_url(url)
-        except ValueError as e:
-            self._set_download_error(str(e))
-            logger.warning("Blocked unsafe download URL %s: %s", url, e)
-            return False
+            current_url = url
+            max_redirects = 5
+            redirect_count = 0
+            response = None
 
-        try:
-            with self.session.get(url, timeout=self.timeout, stream=True) as response:
+            while redirect_count <= max_redirects:
+                try:
+                    validate_public_download_url(current_url)
+                except ValueError as e:
+                    self._set_download_error(str(e))
+                    logger.warning("Blocked unsafe download URL %s: %s", current_url, e)
+                    return False
+
+                response_ctx = self.session.get(
+                    current_url, timeout=self.timeout, stream=True, allow_redirects=False
+                )
+                response = response_ctx.__enter__()
+
+                if response.status_code in (301, 302, 303, 307, 308):
+                    redirect_url = response.headers.get("Location")
+                    if not redirect_url:
+                        response_ctx.__exit__(None, None, None)
+                        break
+                    current_url = urljoin(current_url, redirect_url)
+                    redirect_count += 1
+                    response_ctx.__exit__(None, None, None)
+                else:
+                    break
+            else:
+                self._set_download_error("Too many redirects")
+                return False
+
+            with response_ctx:
                 try:
                     response.raise_for_status()
                 except requests.HTTPError as e:

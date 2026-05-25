@@ -68,5 +68,6 @@ class DownloadJob:
     current_item: str | None = None
     error: str | None = None
     results: list[DownloadResult] | None = None
+    cancel_requested: bool = False
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)

@@ -1,17 +1,16 @@
 """Textual TUI Application for reddit_downloader."""
 
 import os
+import subprocess
 import sys
 import threading
-import subprocess
 from pathlib import Path
 from typing import ClassVar
-from datetime import datetime
 
 from dotenv import load_dotenv
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
+from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
@@ -19,17 +18,17 @@ from textual.widgets import (
     Header,
     Input,
     Label,
-    ProgressBar,
-    Static,
     ListItem,
     ListView,
+    ProgressBar,
+    Static,
 )
-from textual.reactive import reactive
 
 from reddit_downloader.client import RedditClient
-from reddit_downloader.parser import validate_reddit_url, parse_url
-from reddit_downloader.types import JobStatus, DownloadJob
 from reddit_downloader.jobs import JobManager
+from reddit_downloader.parser import validate_reddit_url
+from reddit_downloader.types import DownloadJob, JobStatus
+
 
 # Cross-platform directory opener helper
 def open_directory(path: Path) -> None:
@@ -84,7 +83,7 @@ class CredentialsModal(ModalScreen[tuple[str, str, str] | None]):
         color: #ffffff;
         margin-bottom: 1;
     }
-    
+
     .modal-input:focus {
         border: solid #00f0ff;
     }
@@ -119,7 +118,7 @@ class CredentialsModal(ModalScreen[tuple[str, str, str] | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="modal_container"):
             yield Label("Reddit API Credentials Setup", classes="modal-title")
-            
+
             yield Label("Client ID:", classes="modal-label")
             yield Input(
                 value=self.initial_client_id,
@@ -127,7 +126,7 @@ class CredentialsModal(ModalScreen[tuple[str, str, str] | None]):
                 classes="modal-input",
                 id="modal_client_id",
             )
-            
+
             yield Label("Client Secret:", classes="modal-label")
             yield Input(
                 value=self.initial_client_secret,
@@ -136,7 +135,7 @@ class CredentialsModal(ModalScreen[tuple[str, str, str] | None]):
                 classes="modal-input",
                 id="modal_client_secret",
             )
-            
+
             yield Label("User Agent:", classes="modal-label")
             yield Input(
                 value=self.initial_user_agent,
@@ -144,7 +143,7 @@ class CredentialsModal(ModalScreen[tuple[str, str, str] | None]):
                 classes="modal-input",
                 id="modal_user_agent",
             )
-            
+
             with Horizontal(classes="modal-buttons"):
                 yield Button("Save", id="save_btn", classes="modal-btn")
                 yield Button("Cancel", id="cancel_btn", classes="modal-btn")
@@ -169,6 +168,11 @@ class JobWidget(Static):
         margin: 0 0 1 0;
         padding: 1;
         height: auto;
+    }
+
+    JobWidget.selected-job {
+        border: double #ffd700;
+        background: #252525;
     }
 
     JobWidget:hover {
@@ -253,7 +257,11 @@ class JobWidget(Static):
         with Horizontal(classes="job-title-row"):
             yield Label(self.url, classes="job-url-label")
             status_text = self.status.value.upper()
-            yield Label(status_text, id="status_badge", classes=f"job-status-badge status-{self.status.value}")
+            yield Label(
+                status_text,
+                id="status_badge",
+                classes=f"job-status-badge status-{self.status.value}",
+            )
 
         yield ProgressBar(
             total=max(1, self.total_items),
@@ -262,10 +270,14 @@ class JobWidget(Static):
             id="job_progress",
         )
 
-        progress_text = f"Downloaded {self.completed_items} of {self.total_items} posts" if self.total_items > 0 else "Preparing download..."
+        progress_text = (
+            f"Downloaded {self.completed_items} of {self.total_items} posts"
+            if self.total_items > 0
+            else "Preparing download..."
+        )
         if self.failed_items > 0:
             progress_text += f" ({self.failed_items} failed)"
-            
+
         yield Label(progress_text, id="progress_label", classes="job-progress-info")
         yield Label(self.current_item or "", id="current_post_label", classes="job-current-post")
         yield Label(self.error or "", id="error_label", classes="job-error-msg")
@@ -303,7 +315,11 @@ class JobWidget(Static):
         pb.progress = self.completed_items
 
         # Update progress label
-        progress_text = f"Downloaded {self.completed_items} of {self.total_items} posts" if self.total_items > 0 else "Preparing download..."
+        progress_text = (
+            f"Downloaded {self.completed_items} of {self.total_items} posts"
+            if self.total_items > 0
+            else "Preparing download..."
+        )
         if self.failed_items > 0:
             progress_text += f" ({self.failed_items} failed)"
         self.query_one("#progress_label", Label).update(progress_text)
@@ -335,6 +351,26 @@ class JobWidget(Static):
             cancel_btn.display = False
             open_btn.display = True
 
+        # Update visual selection highlight
+        self.update_selection_highlight()
+
+    def update_selection_highlight(self) -> None:
+        """Update selection highlight based on whether this job is selected."""
+        if not self.is_mounted:
+            return
+        is_selected = getattr(self.app, "selected_job_id", None) == self.job_id
+        if is_selected:
+            self.add_class("selected-job")
+        else:
+            self.remove_class("selected-job")
+
+    def on_click(self) -> None:
+        """Handle click on the JobWidget to select this job."""
+        self.app.selected_job_id = self.job_id  # type: ignore[attr-defined]
+        self.app.update_details_pane()  # type: ignore[attr-defined]
+        for widget in self.app.job_widgets_map.values():  # type: ignore[attr-defined]
+            widget.update_selection_highlight()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "job_cancel_btn":
             self.app.cancel_download_job(self.job_id)  # type: ignore[attr-defined]
@@ -349,7 +385,7 @@ class RedditDownloaderTUI(App[int]):
     TITLE = "Reddit Downloader TUI"
     SUB_TITLE = "Download media from Reddit posts and users"
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
         Binding("q", "quit", "Quit", show=True),
         Binding("c", "clear_finished", "Clear Finished", show=True),
         Binding("w", "toggle_web_server", "Toggle Web Server", show=True),
@@ -435,7 +471,7 @@ class RedditDownloaderTUI(App[int]):
     .status-indicator {
         text-style: bold;
     }
-    
+
     .status-ok { color: #2e8b57; }
     .status-err { color: #dc143c; }
 
@@ -479,14 +515,16 @@ class RedditDownloaderTUI(App[int]):
     ) -> None:
         super().__init__()
         self.output_dir = output_dir
-        
+
         # Load env vars first
         load_dotenv()
-        self.client_id = client_id or os.getenv("REDDIT_CLIENT_ID", "")
-        self.client_secret = client_secret or os.getenv("REDDIT_CLIENT_SECRET", "")
-        self.user_agent = user_agent or os.getenv("REDDIT_USER_AGENT", "reddit_downloader/0.1.0")
+        self.client_id: str = client_id or os.getenv("REDDIT_CLIENT_ID") or ""
+        self.client_secret: str = client_secret or os.getenv("REDDIT_CLIENT_SECRET") or ""
+        self.user_agent: str = (
+            user_agent or os.getenv("REDDIT_USER_AGENT") or "reddit_downloader/0.1.0"
+        )
 
-        self.job_manager = JobManager()
+        self.job_manager = JobManager(persistence_file=self.output_dir / ".jobs.json")
         self.reddit_client: RedditClient | None = None
         self.web_server_thread: threading.Thread | None = None
         self.web_server_running = False
@@ -496,32 +534,34 @@ class RedditDownloaderTUI(App[int]):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        
+
         with Horizontal(id="main_layout"):
             # Sidebar panel (Inputs and config status)
             with Vertical(id="sidebar"):
                 yield Label("ADD NEW DOWNLOAD", classes="section-title")
-                
+
                 yield Label("Reddit URL (Post or User):", classes="form-label")
                 yield Input(
                     placeholder="https://reddit.com/r/...",
                     id="input_url",
                     classes="form-input",
                 )
-                
+
                 yield Label("Limit (For User posts only):", classes="form-label")
                 yield Input(
                     placeholder="e.g. 50 (optional)",
                     id="input_limit",
                     classes="form-input",
                 )
-                
+
                 yield Button("Start Download", id="download_btn")
 
                 # API Status panel
                 with Vertical(classes="api-status-panel"):
                     yield Label("REDDIT API CONFIG", classes="form-label")
-                    yield Label("Status: Checking...", id="api_status_label", classes="status-indicator")
+                    yield Label(
+                        "Status: Checking...", id="api_status_label", classes="status-indicator"
+                    )
                     yield Button("Update API Keys", id="sidebar_api_btn", classes="form-input")
 
                 # Web Server panel
@@ -529,7 +569,7 @@ class RedditDownloaderTUI(App[int]):
                     yield Label("TEXTUAL WEB SERVER", classes="web-title")
                     yield Label("Status: Stopped", id="web_server_status")
                     yield Label("Address: http://127.0.0.1:8000", id="web_server_address")
-                    
+
             # Content Area (Active Downloads and selected item details)
             with Vertical(id="content_area"):
                 # Top section: Download Jobs List
@@ -542,7 +582,9 @@ class RedditDownloaderTUI(App[int]):
                 # Bottom section: Details of selected download
                 with Vertical(id="details_container"):
                     yield Label("DOWNLOADED FILES INFO", classes="section-title")
-                    yield Label("Select a completed download to view files", id="details_instructions")
+                    yield Label(
+                        "Select a completed download to view files", id="details_instructions"
+                    )
                     yield ListView(id="files_list")
 
         yield Footer()
@@ -551,7 +593,7 @@ class RedditDownloaderTUI(App[int]):
         """Initialize components and start timers."""
         self.query_one("#web_server_address", Label).display = False
         self.query_one("#files_list", ListView).display = False
-        
+
         # Validate and configure Reddit Client
         self.update_api_status()
 
@@ -575,7 +617,7 @@ class RedditDownloaderTUI(App[int]):
     def update_api_status(self) -> None:
         """Validate current API credentials and update UI indicators."""
         label = self.query_one("#api_status_label", Label)
-        
+
         if not self.client_id or not self.client_secret:
             label.update("Status: Missing Credentials ❌")
             label.classes = "status-indicator status-err"
@@ -591,13 +633,23 @@ class RedditDownloaderTUI(App[int]):
                 )
                 if client.can_access_api():
                     self.reddit_client = client
-                    self.call_after_refresh(self._set_api_label, "Status: Connected ✅", "status-indicator status-ok")
+                    self.call_after_refresh(
+                        self._set_api_label, "Status: Connected ✅", "status-indicator status-ok"
+                    )
                 else:
                     self.reddit_client = None
-                    self.call_after_refresh(self._set_api_label, "Status: Access Denied ❌", "status-indicator status-err")
+                    self.call_after_refresh(
+                        self._set_api_label,
+                        "Status: Access Denied ❌",
+                        "status-indicator status-err",
+                    )
             except Exception:
                 self.reddit_client = None
-                self.call_after_refresh(self._set_api_label, "Status: Connection Error ❌", "status-indicator status-err")
+                self.call_after_refresh(
+                    self._set_api_label,
+                    "Status: Connection Error ❌",
+                    "status-indicator status-err",
+                )
 
         threading.Thread(target=check_status, daemon=True).start()
 
@@ -628,7 +680,9 @@ class RedditDownloaderTUI(App[int]):
 
         # Check credentials
         if self.reddit_client is None:
-            self.notify("Cannot download: Reddit API credentials are missing or invalid!", severity="error")
+            self.notify(
+                "Cannot download: Reddit API credentials are missing or invalid!", severity="error"
+            )
             return
 
         # Parse limit
@@ -654,7 +708,7 @@ class RedditDownloaderTUI(App[int]):
                 limit,
                 client_factory=self.get_reddit_client,
             )
-            
+
             # Reset inputs
             url_input.value = ""
             limit_input.value = ""
@@ -700,7 +754,7 @@ class RedditDownloaderTUI(App[int]):
                 self.job_widgets_map[job.job_id] = widget
                 # Mount it and make it clickable by binding on-click Focus/Select behavior
                 container.mount(widget)
-                
+
         # Update details pane for current selection
         self.update_details_pane()
 
@@ -710,14 +764,15 @@ class RedditDownloaderTUI(App[int]):
         # In a simpler TUI, we can show files for the most recently completed job
         # or let users focus/select a job. Let's find the selected job or the latest completed one.
         selected_job = None
-        
+
         if self.selected_job_id:
             selected_job = self.job_manager.get_job(self.selected_job_id)
 
         # Fallback to the latest completed job with downloads if none explicitly selected
         if not selected_job:
             completed_jobs = [
-                j for j in self.job_manager.list_jobs()
+                j
+                for j in self.job_manager.list_jobs()
                 if j.status == JobStatus.COMPLETED and j.results
             ]
             if completed_jobs:
@@ -739,22 +794,47 @@ class RedditDownloaderTUI(App[int]):
 
         # Group files
         files_data = []
-        for index, result in enumerate(selected_job.results):
+        for result in selected_job.results:
             if result.success and result.file_path and result.file_path.exists():
                 files_data.append((result.file_path.name, result.file_path.stat().st_size))
 
         if not files_data:
-            list_view.mount(ListItem(Label("No files downloaded or files were deleted.", classes="file-item-label")))
+            list_view.mount(
+                ListItem(
+                    Label("No files downloaded or files were deleted.", classes="file-item-label")
+                )
+            )
         else:
-            header_lbl = Label(f"Files for Job ({selected_job.url[:30]}...):", classes="file-item-label")
+            header_lbl = Label(
+                f"Files for Job ({selected_job.url[:30]}...):", classes="file-item-label"
+            )
             header_lbl.styles.color = "#ffd700"
             list_view.mount(ListItem(header_lbl))
-            
+
             for filename, size_bytes in files_data:
                 size_kb = size_bytes / 1024
-                size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{(size_kb/1024):.1f} MB"
+                size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{(size_kb / 1024):.1f} MB"
                 item_text = f"📄 {filename} ({size_str})"
                 list_view.mount(ListItem(Label(item_text, classes="file-item-label")))
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """Handle selection of a file from the list to open it."""
+        if not self.selected_job_id:
+            return
+        job = self.job_manager.get_job(self.selected_job_id)
+        if not job or not job.results:
+            return
+
+        files_paths = []
+        for result in job.results:
+            if result.success and result.file_path and result.file_path.exists():
+                files_paths.append(result.file_path)
+
+        file_index = event.index - 1
+        if 0 <= file_index < len(files_paths):
+            target_file = files_paths[file_index]
+            self.notify(f"Opening file: {target_file.name}", severity="information")
+            open_directory(target_file)
 
     def action_clear_finished(self) -> None:
         """Clear all completed/failed/cancelled jobs from the list."""
@@ -764,16 +844,17 @@ class RedditDownloaderTUI(App[int]):
 
     def action_setup_api(self) -> None:
         """Open the Credentials setup modal screen."""
+
         def handle_credentials(creds: tuple[str, str, str] | None) -> None:
             if creds:
                 client_id, client_secret, user_agent = creds
                 self.client_id = client_id
                 self.client_secret = client_secret
                 self.user_agent = user_agent
-                
+
                 # Write to .env file
                 self.save_credentials_to_env(client_id, client_secret, user_agent)
-                
+
                 # Re-validate
                 self.update_api_status()
                 self.notify("Credentials updated and saved to .env!", severity="information")
@@ -787,13 +868,13 @@ class RedditDownloaderTUI(App[int]):
         lines = []
         if env_path.exists():
             lines = env_path.read_text(encoding="utf-8").splitlines()
-        
+
         updates = {
             "REDDIT_CLIENT_ID": client_id,
             "REDDIT_CLIENT_SECRET": client_secret,
             "REDDIT_USER_AGENT": user_agent,
         }
-        
+
         new_lines = []
         seen = set()
         for line in lines:
@@ -805,11 +886,11 @@ class RedditDownloaderTUI(App[int]):
                     seen.add(key)
                     continue
             new_lines.append(line)
-            
+
         for key, val in updates.items():
             if key not in seen:
                 new_lines.append(f"{key}={val}")
-                
+
         env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
     def action_toggle_web_server(self) -> None:
@@ -818,13 +899,16 @@ class RedditDownloaderTUI(App[int]):
         address_lbl = self.query_one("#web_server_address", Label)
 
         if self.web_server_running:
-            self.notify("Web server runs continuously in background. Close TUI to stop.", severity="warning")
+            self.notify(
+                "Web server runs continuously in background. Close TUI to stop.", severity="warning"
+            )
             return
 
         # Start web server thread
         def start_textual_serve() -> None:
             try:
                 from textual_serve.server import Server
+
                 cmd_parts = [sys.executable, "-m", "reddit_downloader", "tui"]
                 if self.output_dir:
                     cmd_parts.extend(["-o", str(self.output_dir)])
@@ -869,4 +953,5 @@ def run_tui(
         client_secret=client_secret,
         user_agent=user_agent,
     )
-    return app.run()
+    res = app.run()
+    return res if isinstance(res, int) else 0

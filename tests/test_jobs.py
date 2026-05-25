@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from reddit_downloader.types import JobStatus, URLType
 from reddit_downloader.jobs import JobManager
+from reddit_downloader.types import JobStatus, URLType
 
 
 class TestJobManager:

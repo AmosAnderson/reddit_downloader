@@ -4,10 +4,8 @@ import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
+from reddit_downloader.tui.app import JobWidget, RedditDownloaderTUI
 from reddit_downloader.types import DownloadJob, JobStatus
-from reddit_downloader.tui.app import RedditDownloaderTUI, JobWidget
 
 
 def test_tui_app_mount(tmp_path: Path) -> None:
@@ -15,7 +13,7 @@ def test_tui_app_mount(tmp_path: Path) -> None:
     app = RedditDownloaderTUI(output_dir=tmp_path)
 
     async def run() -> None:
-        async with app.run_test() as pilot:
+        async with app.run_test():
             # Verify basic attributes
             assert app.output_dir == tmp_path
             assert app.TITLE == "Reddit Downloader TUI"
@@ -46,7 +44,7 @@ def test_job_widget_updates(tmp_path: Path) -> None:
     app = RedditDownloaderTUI(output_dir=tmp_path)
 
     async def run() -> None:
-        async with app.run_test() as pilot:
+        async with app.run_test():
             widget = JobWidget(job, tmp_path)
             await app.query_one("#jobs_scroll").mount(widget)
 
@@ -90,10 +88,10 @@ def test_tui_api_status_check(mock_client_class: MagicMock, tmp_path: Path) -> N
     )
 
     async def run() -> None:
-        async with app.run_test() as pilot:
+        async with app.run_test():
             # Let the background status check thread complete
             await asyncio.sleep(0.2)
-            
+
             # Since can_access_api was True, reddit_client should be initialized
             assert app.reddit_client is not None
             assert app.reddit_client.can_access_api() is True
